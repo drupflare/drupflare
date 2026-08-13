@@ -1,0 +1,15 @@
+{
+	"files.associations": {
+		"*.rc": "makefile",
+		".php-wasm-rc": "makefile"
+	},
+	"editor.formatOnSave": true,
+	"editor.defaultFormatter": "esbenp.prettier-vscode",
+	"[c][cpp]": {
+		"editor.defaultFormatter": "xaver.clang-format"
+	},
+	"prettier.useTabs": true,
+	"prettier.tabWidth": 4,
+	"prettier.printWidth": 100,
+	"npm.packageManager": "bun"
+}
