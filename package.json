@@ -1,0 +1,34 @@
+{
+	"name": "@drupflare/drupflare",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Tooling only. The published artifact is the composer package drupflare/drupflare.",
+	"scripts": {
+		"prettier": "prettier --write .",
+		"prettier:check": "prettier --check .",
+		"docs": "./vendor/bin/phpdoc -d src -t docs --title=\"drupflare/drupflare\" --template=\"clean\" && cp .phpdoc/template/favicon.png docs/favicon.png && cp .phpdoc/template/favicon.ico docs/favicon.ico && bash phpdoc-favicon.sh",
+		"lint": "php tests/lint.php",
+		"test": "php tests/load-classes.php && php tests/health-suite.php",
+		"prepare": "husky",
+		"analyze": "./vendor/bin/phpstan analyse --memory-limit=1G",
+		"lint:php": "./vendor/bin/phpcs",
+		"lint:php:fix": "./vendor/bin/phpcbf",
+		"test:health": "php tests/health-suite.php",
+		"test:coverage": "php tests/coverage.php"
+	},
+	"devDependencies": {
+		"@prettier/plugin-php": "^0.25.0",
+		"@prettier/plugin-xml": "^3.4.2",
+		"husky": "^9.1.7",
+		"lint-staged": "^17.3.0",
+		"prettier": "^3.9.6",
+		"prettier-plugin-sh": "^0.19.0"
+	},
+	"lint-staged": {
+		"*.{md,json,yml,php}": "prettier --write",
+		"*.{php,module,install,inc}": [
+			"./vendor/bin/phpcs --",
+			"php tests/lint.php"
+		]
+	}
+}
