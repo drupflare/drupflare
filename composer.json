@@ -1,0 +1,82 @@
+{
+	"name": "drupflare/drupflare",
+	"description": "Bridges Drupal to Cloudflare Workers bindings: mail, outbound HTTP, images, logging and per-request isolation.",
+	"type": "drupal-module",
+	"license": "MIT",
+	"keywords": [
+		"drupal",
+		"cloudflare",
+		"workers",
+		"wasm",
+		"php-wasm",
+		"serverless"
+	],
+	"homepage": "https://github.com/drupflare/drupflare",
+	"authors": [
+		{
+			"name": "Gregory Mitchell",
+			"email": "me@gmitch215.xyz",
+			"role": "Developer"
+		}
+	],
+	"support": {
+		"issues": "https://github.com/drupflare/drupflare/issues",
+		"source": "https://github.com/drupflare/drupflare"
+	},
+	"require": {
+		"php": "^8.3",
+		"ext-json": "*",
+		"drupal/core": "^11.3",
+		"drupflare/stream-http": "^0.1",
+		"guzzlehttp/guzzle": "^7.5",
+		"guzzlehttp/promises": "^2.0",
+		"guzzlehttp/psr7": "^2.4",
+		"psr/http-message": "^2.0",
+		"psr/log": "^3.0",
+		"symfony/dependency-injection": "^7.0"
+	},
+	"suggest": {
+		"drupflare/rom": "The Drupal 11 database driver for Cloudflare Durable Object SQLite. Needed when the Worker stores the site in the Durable Object rather than in an external database."
+	},
+	"autoload": {
+		"psr-4": {
+			"Drupal\\drupflare\\": "src/"
+		}
+	},
+	"extra": {
+		"installer-name": "drupflare"
+	},
+	"repositories": [
+		{
+			"type": "composer",
+			"url": "https://packages.drupal.org/8"
+		}
+	],
+	"config": {
+		"sort-packages": true,
+		"allow-plugins": {
+			"dealerdirect/phpcodesniffer-composer-installer": true,
+			"phpdocumentor/shim": true,
+			"symfony/runtime": false,
+			"drupal/core-composer-scaffold": false
+		}
+	},
+	"require-dev": {
+		"drupal/coder": "^9.0",
+		"phpdocumentor/shim": "^3.10",
+		"phpstan/phpstan": "^2.2",
+		"phpunit/php-code-coverage": "^11.0 || ^12.0"
+	},
+	"scripts": {
+		"analyze": "phpstan analyse --memory-limit=1G",
+		"lint": "phpcs",
+		"lint:fix": "phpcbf",
+		"test": "php tests/load-classes.php"
+	},
+	"scripts-descriptions": {
+		"analyze": "Runs PHPStan over src/ at the level pinned in phpstan.neon.",
+		"lint": "Runs phpcs with the ruleset in phpcs.xml.dist.",
+		"lint:fix": "Runs phpcbf over the same ruleset.",
+		"test": "Runs the class-loading gate; needs a Drupal 11.3+ root in $DRUPAL_ROOT or argv[1]."
+	}
+}
