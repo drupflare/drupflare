@@ -1,0 +1,35 @@
+coverage:
+  precision: 2
+  round: down
+  range: '10...90'
+  status:
+    project:
+      default:
+        target: 50%
+        threshold: 2%
+    patch:
+      default:
+        target: 50%
+        threshold: 5%
+
+comment:
+  layout: 'condensed_header, condensed_files, condensed_footer'
+  require_changes: true
+
+flag_management:
+  default_rules:
+    carryforward: true
+  individual_flags:
+    - name: health-suite
+      paths:
+        - src/
+    - name: load-classes
+      paths:
+        - src/
+
+ignore:
+  - 'tests/**/*'
+  - 'stubs/**/*'
+  - 'coverage/**/*'
+  - 'vendor/**/*'
+  - 'drupal-root/**/*'
