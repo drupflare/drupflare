@@ -1,0 +1,13 @@
+services:
+  logger.cfw:
+    class: Drupal\drupflare\Logger\CfwLogger
+    arguments: ['@logger.log_message_parser']
+    tags:
+      - { name: logger }
+
+  drupflare.http_deferred:
+    class: Drupal\drupflare\Queue\CfwDeferredHttp
+
+  drupflare.request_resetter:
+    class: Drupal\drupflare\RequestResetter
+    arguments: ['@service_container']

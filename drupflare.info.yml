@@ -1,0 +1,5 @@
+name: 'Drupflare'
+type: module
+description: 'Drupflare Compatibility Layer - Replaces compiled C libraries with Cloudflare platform primitives: mail, images, outbound HTTP, logging, and request isolation.'
+core_version_requirement: ^11.3
+package: 'Cloudflare Workers'
