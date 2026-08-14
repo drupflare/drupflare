@@ -1,0 +1,136 @@
+<?xml version="1.0" ?>
+<ruleset name="drupflare">
+	<description>Drupal coding standards, with two deliberate project deviations.</description>
+
+	<file>src</file>
+	<file>tests</file>
+	<file>drupflare.module</file>
+	<file>drupflare.install</file>
+	<arg name="extensions" value="php,module,install,inc" />
+	<arg value="sp" />
+	<arg name="colors" />
+
+	<rule ref="Drupal">
+		<!--
+			The house rule is: import with `use`, then refer to the short name, everywhere, and
+			the small global classes are explicitly NOT exempt - `use Closure;` and
+			`use Exception;` are the required form, not the redundant one. This sniff asserts the
+			opposite and would force `\Closure` back into signatures, so the two cannot both be
+			right and the sniff loses. Same reasoning as the layout exclusions below: phpcs does
+			not own style in this repo.
+		-->
+		<exclude name="Drupal.Classes.UseGlobalClass.RedundantUseStatement" />
+		<!--
+			The project comment style for `//` comments is lowercase with no trailing period.
+			These two sniffs demand the opposite, and they apply ONLY to inline comments.
+			Every Drupal.Commenting.DocComment.* sniff stays enabled, because a `/** */` block
+			is real documentation and Drupal's capital-and-full-stop rule is correct there.
+		-->
+		<exclude name="Drupal.Commenting.InlineComment.NotCapital" />
+		<exclude name="Drupal.Commenting.InlineComment.InvalidEndChar" />
+	</rule>
+
+	<!--
+		The house section markers are `// #region <name>` / `// #endregion`, and a marker
+		followed by a docblock has to keep the blank line or it reads as the first line of
+		that docblock; an `#endregion` cannot document the declaration after it at all. The
+		sniff carries a single code, so this excludes all of it, and what it checks is pure
+		whitespace, the same class as the layout exclusions below.
+	-->
+
+	<!--
+		The house rule is `use X` plus the short name everywhere, including docblocks: `@see
+		DrupflareServiceProvider` with a matching import, never a fully-qualified `@see`. This sniff
+		counts only CODE references by default, so an import used solely by an annotation reads as
+		unused. searchAnnotations makes it read docblocks too, which keeps the check useful - a
+		genuinely orphaned import is still reported - without fighting the rule.
+	-->
+	<rule ref="SlevomatCodingStandard.Namespaces.UnusedUses">
+		<properties>
+			<property name="searchAnnotations" value="true" />
+		</properties>
+	</rule>
+
+	<rule ref="DrupalPractice">
+		<exclude name="DrupalPractice.Commenting.CommentEmptyLine.SpacingAfter" />
+	</rule>
+
+	<!--
+		Drupal's default is 80. This repo formats everything else at printWidth 100
+		(see .prettierrc), and two different limits in one repo is incoherent.
+	-->
+	<rule ref="Drupal.Files.LineLength">
+		<properties>
+			<property name="lineLimit" value="100" />
+		</properties>
+	</rule>
+
+	<!--
+		PHP's streamWrapper prototype mandates these exact snake_case method names; the engine
+		looks up `stream_open`, `stream_read`, `url_stat` and the rest literally. Renaming them to
+		camelCase would silently stop the wrapper from working, so this sniff is wrong here
+		specifically rather than inconvenient.
+	-->
+	<rule ref="Drupal.NamingConventions.ValidFunctionName.ScopeNotCamelCaps">
+		<exclude-pattern>src/StreamWrapper/HttpsStreamWrapper.php</exclude-pattern>
+		<exclude-pattern>src/StreamWrapper/CfwFileStreamWrapper.php</exclude-pattern>
+	</rule>
+
+	<!--
+		The sniff wants globals prefixed like `$_modulename_foo`, which is for module files.
+		These are counters in a standalone test harness that never runs inside Drupal.
+	-->
+	<rule ref="Drupal.NamingConventions.ValidGlobal">
+		<exclude-pattern>tests/*</exclude-pattern>
+	</rule>
+
+	<!--
+		RequestResetter::verify() is a diagnostic: its job is to read the SAME global container the
+		rest of the request reads, to prove the reset actually happened. Injecting the service
+		would observe a different object and the check would pass while the bug remained.
+	-->
+	<rule ref="DrupalPractice.Objects.GlobalDrupal.GlobalDrupal">
+		<exclude-pattern>src/RequestResetter.php</exclude-pattern>
+	</rule>
+	<!--
+		#region layout is not phpcs's job in this repo
+		The house style is TABS rendered 4 wide at a 100-char line limit (.editorconfig,
+		.prettierrc), and `@prettier/plugin-php` is what enforces it. The Drupal standard
+		hard-codes 2 SPACES and Drupal's own brace placement, so the two tools cannot both
+		be right about layout and phpcs loses that argument.
+
+		The exclusion set below is the one worked out in the sibling driver repo's
+		phpcs.xml.dist against the same formatter and the same house style; every entry is
+		pure whitespace, brace position or casing. phpcs keeps docs, naming, arrays, line
+		length, casing and every Drupal/DrupalPractice API-misuse check.
+
+		Generic.WhiteSpace.DisallowTabIndent is the direct contradiction: it reports "tabs
+		are not allowed" on every indented line in the repo.
+
+		Drupal.Arrays.Array.ArrayIndentation is on this list even though CLAUDE.md
+		previously said not to exclude it. That note was written while the tree was 2-space
+		formatted, where the sniff could fire for a real reason (a wrapped concatenation
+		reading as sibling array elements). Under tab indentation it can never pass: it
+		asserts "parent indent + 2 spaces" and there are no spaces to count, so it fires on
+		every array element regardless of content. A rule that cannot pass carries no signal.
+
+		The casing one has prior art: mantle2, the production Drupal module in this
+		workspace, is 1,276 lowercase `true`/`false`/`null` against 1 uppercase.
+	-->
+	<rule ref="Drupal">
+		<exclude name="Generic.PHP.UpperCaseConstant.Found" />
+		<exclude name="Generic.WhiteSpace.DisallowTabIndent" />
+		<exclude name="Drupal.WhiteSpace.ScopeIndent" />
+		<exclude name="Drupal.WhiteSpace.ObjectOperatorIndent" />
+		<exclude name="Drupal.WhiteSpace.ScopeClosingBrace" />
+		<exclude name="Drupal.Arrays.Array.ArrayIndentation" />
+		<exclude name="Drupal.Classes.ClassDeclaration.BraceOnNewLine" />
+		<exclude name="Drupal.Classes.ClassDeclaration.CloseBraceAfterBody" />
+		<exclude name="Drupal.Functions.MultiLineFunctionDeclaration.BraceOnNewLine" />
+		<exclude name="Drupal.Functions.MultiLineFunctionDeclaration.Indent" />
+		<exclude name="Drupal.ControlStructures.ControlSignature.NewlineAfterCloseBrace" />
+		<exclude name="Squiz.WhiteSpace.FunctionSpacing.AfterLast" />
+		<exclude name="Squiz.WhiteSpace.FunctionSpacing.BeforeFirst" />
+	</rule>
+	<!-- #endregion -->
+</ruleset>
