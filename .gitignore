@@ -1,0 +1,23 @@
+# composer. The lock file is not committed: this is a library, so the consuming
+# project's lock is the one that resolves.
+vendor/
+composer.lock
+composer.phar
+
+# bun
+node_modules/
+package-lock.json
+
+# the Drupal root the class-loading gate reads; fetched by .github/workflows/build.yml
+drupal-root/
+
+# written by tests/coverage.php
+coverage/
+
+# phpDocumentor: docs/ is built in CI and deployed to gh-pages, never committed to master
+.phpdoc/cache
+docs/
+
+# editor and OS
+.idea/
+.DS_Store
