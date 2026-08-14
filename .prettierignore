@@ -5,3 +5,6 @@ coverage/
 bun.lock
 LICENSE
 .husky/
+
+.phpdoc/
+docs/
