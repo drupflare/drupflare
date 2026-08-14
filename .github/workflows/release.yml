@@ -33,7 +33,7 @@ jobs:
             echo "package.json has no version field; the tag would be 'vundefined'." >&2
             exit 1
           fi
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
       - name: Retrieve Latest Tag
         id: latest_tag
         run: echo "LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo '')" >> $GITHUB_ENV
