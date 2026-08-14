@@ -109,5 +109,13 @@ jobs:
           curl -fsSL --retry 3 "https://ftp.drupal.org/files/projects/drupal-${{ matrix.drupal }}.tar.gz" -o /tmp/drupal.tar.gz
           mkdir -p drupal-root
           tar -xzf /tmp/drupal.tar.gz --strip-components=1 -C drupal-root
+      - name: Cache Composer Downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/composer
+          key: composer-8.3-${{ hashFiles('composer.json') }}
+          restore-keys: composer-8.3-
+      - name: Install Composer Dependencies
+        run: composer install --no-interaction --no-progress
       - name: Load Every Class Against Real Drupal
         run: php tests/load-classes.php ./drupal-root
