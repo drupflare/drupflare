@@ -1,0 +1,39 @@
+<?php
+
+/**
+ * @file
+ * Install and uninstall hooks for the Drupflare compatibility layer.
+ *
+ * Requirements are NOT here. Drupal 11.3 deprecates a procedural
+ * `drupflare_requirements()` without a `#[LegacyRequirementsHook]` attribute
+ * (`core/lib/Drupal/Core/Hook/HookCollectorPass.php:639`), and splits the two phases across two
+ * classes instead: `src/Install/Requirements/DrupflareRequirements.php` for install and
+ * `src/Hook/Requirements.php` for the status report.
+ */
+
+declare(strict_types=1);
+
+use Drupal\drupflare\StreamWrapper\HttpsStreamWrapper;
+
+/**
+ * Implements hook_install().
+ */
+function drupflare_install(): void
+{
+	// drupflare.module registers these on every request, from ModuleHandler::loadAll()
+	HttpsStreamWrapper::register();
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function drupflare_uninstall(): void
+{
+	// a wrapper left registered for a module that is gone routes uninstalled code, and PHP
+	// offers no way to ask which class serves a scheme, so nothing later could detect it
+	foreach (['http', 'https'] as $scheme) {
+		if (in_array($scheme, stream_get_wrappers(), true)) {
+			@stream_wrapper_unregister($scheme);
+		}
+	}
+}

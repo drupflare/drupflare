@@ -1,0 +1,15 @@
+<?php
+
+/**
+ * @file
+ * Registers this module's http/https stream wrapper on every request.
+ *
+ * The Worker host also registers this wrapper, earlier, from src/drupal/site-php.ts. That covers
+ * the window before the kernel exists at all. This covers every other host.
+ */
+
+declare(strict_types=1);
+
+use Drupal\drupflare\StreamWrapper\HttpsStreamWrapper;
+
+HttpsStreamWrapper::register();
