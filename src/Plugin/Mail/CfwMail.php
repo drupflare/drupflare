@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Drupal\drupflare\Plugin\Mail;
 
-use Drupal\drupflare\Host;
+use Drupal;
 use Drupal\Core\Mail\Attribute\Mail;
 use Drupal\Core\Mail\MailFormatHelper;
 use Drupal\Core\Mail\MailInterface;
 use Drupal\Core\StringTranslation\StringTranslationTrait;
+use Drupal\Core\StringTranslation\TranslatableMarkup;
+use Drupal\drupflare\Host;
 
 /**
  * Sends mail through the Worker's email binding instead of SMTP.
@@ -21,12 +23,7 @@ use Drupal\Core\StringTranslation\StringTranslationTrait;
  * The format() half is unchanged from core's behaviour on purpose: converting HTML
  * to text and wrapping lines is Drupal's business, not the transport's.
  */
-#[
-	Mail(
-		id: 'cfw_mail',
-		label: new \Drupal\Core\StringTranslation\TranslatableMarkup('Cloudflare Email Service'),
-	),
-]
+#[Mail(id: 'cfw_mail', label: new TranslatableMarkup('Cloudflare Email Service'))]
 class CfwMail implements MailInterface
 {
 	use StringTranslationTrait;
@@ -64,7 +61,7 @@ class CfwMail implements MailInterface
 		if (!Host::has('cfwMail')) {
 			// returning FALSE makes Drupal log a mail failure, which is the truthful
 			// outcome; throwing would break whatever content operation triggered it
-			\Drupal::logger('drupflare')->error(
+			Drupal::logger('drupflare')->error(
 				'No email binding is configured for this Worker, so mail to @to was not sent.',
 				['@to' => $message['to'] ?? '(none)'],
 			);
@@ -87,7 +84,7 @@ class CfwMail implements MailInterface
 		]);
 
 		if (($reply['ok'] ?? false) !== true) {
-			\Drupal::logger('drupflare')->error('Mail to @to failed: @error', [
+			Drupal::logger('drupflare')->error('Mail to @to failed: @error', [
 				'@to' => $message['to'] ?? '(none)',
 				'@error' => $reply['error'] ?? 'unknown',
 			]);

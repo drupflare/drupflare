@@ -24,7 +24,7 @@ use Drupal\drupflare\Host;
  * RequirementSeverity::Error would make the module uninstallable on a plain PHP host, which is
  * exactly where someone would install it to read the code.
  *
- * @see \Drupal\drupflare\Hook\Requirements
+ * @see Requirements
  */
 final class DrupflareRequirements implements InstallRequirementsInterface
 {

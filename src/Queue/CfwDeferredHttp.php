@@ -43,12 +43,12 @@ class CfwDeferredHttp
 	/**
 	 * Handles one request.
 	 *
-	 * @param \Psr\Http\Message\RequestInterface $request
+	 * @param RequestInterface $request
 	 *   The request.
 	 * @param array $options
 	 *   Guzzle options. 'cfw_deferred' => FALSE forces a synchronous attempt.
 	 *
-	 * @return \GuzzleHttp\Promise\PromiseInterface
+	 * @return PromiseInterface
 	 *   Always fulfilled: either a cached response, a live one, or a 202.
 	 */
 	public function __invoke(RequestInterface $request, array $options): PromiseInterface
