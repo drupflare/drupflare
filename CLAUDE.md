@@ -107,6 +107,13 @@ true is that no HOOK is that early; the include is not a hook.
 
 ## Publishing
 
-The Packagist steps are maintainer-only. Note that `^1.0` cannot
-resolve from a Composer path repository until this repo carries a `v1.0.0` tag - composer reports
-`found drupflare/drupflare[dev-main] but it does not match the constraint`. Use `*@dev` in the interim.
+Published on Packagist as `drupflare/drupflare`, currently **v0.1.0**, so `composer require
+drupflare/drupflare` resolves with no repository stanza. The Packagist steps themselves are
+maintainer-only.
+
+`drupflare/stream-http: ^0.1` is a hard `require` and resolves against its published v0.1.1.
+
+A **local** checkout still needs a Composer path repository, and a path repository reports the branch
+rather than a tag: `^0.1` against a path repo fails with `found drupflare/drupflare[dev-main] but it
+does not match the constraint`. Use `*@dev` for the path-repo case only, never in a published
+constraint.
