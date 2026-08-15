@@ -103,7 +103,8 @@ jobs:
             echo 'No report was produced; the run refused to measure.' >> $GITHUB_STEP_SUMMARY
           fi
       - name: Combine the Reports for the PR Comment
-        if: github.event_name == 'pull_request'
+        id: combine
+        if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
         run: |
           : > /tmp/coverage.txt
           for suite in health classes; do
@@ -112,8 +113,13 @@ jobs:
             echo "$suite" >> /tmp/coverage.txt
             cat "$f" >> /tmp/coverage.txt
           done
+          if [ -s /tmp/coverage.txt ]; then
+            echo 'wrote=1' >> "$GITHUB_OUTPUT"
+          else
+            echo 'wrote=0' >> "$GITHUB_OUTPUT"
+          fi
       - name: Add Coverage as PR Comment
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork && steps.combine.outputs.wrote == '1'
         uses: marocchino/sticky-pull-request-comment@v3
         with:
           header: suite-coverage
