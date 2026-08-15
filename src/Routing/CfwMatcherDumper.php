@@ -63,6 +63,8 @@ class CfwMatcherDumper extends MatcherDumper
 		) {
 			// identical collection, table intact: the 2,095 rows this would write are already there
 			self::$skips++;
+
+			// @phpstan-ignore assign.propertyType
 			$this->routes = null;
 			return '';
 		}
