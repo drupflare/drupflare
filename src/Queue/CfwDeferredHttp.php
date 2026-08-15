@@ -56,9 +56,14 @@ class CfwDeferredHttp
 		$method = strtoupper($request->getMethod());
 		$url = (string) $request->getUri();
 
-		// 1. cached, if a previous fetch left a body behind
-		if (in_array($method, self::CACHEABLE, true)) {
-			$cached = Host::call('cfwHttpCacheGet', ['url' => $url]);
+		// 1. cached, if a previous fetch left a body behind.
+		$deferredBody = (string) $request->getBody();
+		if (in_array($method, self::CACHEABLE, true) || Host::has('cfwQueueFetch')) {
+			$cached = Host::call('cfwHttpCacheGet', [
+				'url' => $url,
+				'method' => $method,
+				'body' => $deferredBody,
+			]);
 			if (($cached['ok'] ?? false) === true && isset($cached['body'])) {
 				return new FulfilledPromise(
 					new Response(
