@@ -28,7 +28,7 @@
 		"ext-json": "*",
 		"drupal/core": "^11.3",
 		"drupflare/stream-http": "^0.1",
-		"guzzlehttp/guzzle": "^7.5",
+		"guzzlehttp/guzzle": "^8.0",
 		"guzzlehttp/promises": "^2.0",
 		"guzzlehttp/psr7": "^2.4",
 		"psr/http-message": "^2.0",
