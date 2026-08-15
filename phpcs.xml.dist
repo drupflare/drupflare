@@ -28,6 +28,7 @@
 		-->
 		<exclude name="Drupal.Commenting.InlineComment.NotCapital" />
 		<exclude name="Drupal.Commenting.InlineComment.InvalidEndChar" />
+		<exclude name="Drupal.Functions.DiscouragedFunctions.Discouraged" />
 	</rule>
 
 	<!--
