@@ -40,14 +40,22 @@ use Drupal\Core\ImageToolkit\Attribute\ImageToolkit;
 use Drupal\Core\ImageToolkit\ImageToolkitBase;
 use Drupal\Core\Mail\Attribute\Mail;
 use Drupal\Core\Mail\MailInterface;
+use Drupal\Core\Cache\DatabaseBackend;
+use Drupal\Core\Cache\DatabaseBackendFactory;
+use Drupal\Core\Routing\MatcherDumper;
 use Drupal\drupflare\Hook\Requirements;
 use Drupal\drupflare\Host;
 use Drupal\drupflare\Install\Requirements\DrupflareRequirements;
 use Drupal\drupflare\ImageToolkit\CfwImageToolkit;
 use Drupal\drupflare\Plugin\Mail\CfwMail;
+use Drupal\drupflare\Cache\CfwCacheBackend;
+use Drupal\drupflare\Cache\CfwCacheBackendFactory;
+use Drupal\drupflare\Routing\CfwMatcherDumper;
 use Drupal\drupflare\StreamWrapper\HttpsStreamWrapper;
 use Drupflare\StreamHttp\HttpsStreamWrapper as BaseHttpsStreamWrapper;
 use Psr\Log\LoggerInterface;
+use Symfony\Component\Routing\Route;
+use Symfony\Component\Routing\RouteCollection;
 use Symfony\Component\Yaml\Yaml;
 
 $module = dirname(__DIR__);
@@ -423,5 +431,124 @@ ok(
 	!isset($present['drupflare_file_wrapper']),
 );
 
+// #region router dump fingerprint
+
+/**
+ * The dumper that stops a rebuild rewriting the rows already in the table.
+ *
+ * A rebuild is 419 routes against three indexes -- 2,095 charged rows -- written whether or not the
+ * collection changed, and `ModuleInstaller::doInstall()` rebuilds the container per module, which
+ * resets `RouteProviderLazyBuilder::$rebuilt` and re-arms the trigger. The fingerprint is what
+ * makes the repeat free; these assert the properties it has to have to be safe.
+ */
+$fingerprint = new ReflectionMethod(CfwMatcherDumper::class, 'fingerprint');
+// no setAccessible: it is deprecated on 8.5 and has had no effect since 8.1
+$fp = static fn(RouteCollection $c): string => $fingerprint->invoke(null, $c);
+
+$collection = static function (array $routes): RouteCollection {
+	$c = new RouteCollection();
+	foreach ($routes as $name => $path) {
+		$c->add($name, new Route($path));
+	}
+	return $c;
+};
+
+ok(
+	'CfwMatcherDumper loads against real Drupal and extends the core dumper',
+	is_a(CfwMatcherDumper::class, MatcherDumper::class, true),
+);
+ok(
+	'the same collection fingerprints identically, which is what makes a repeat skippable',
+	$fp($collection(['a' => '/a', 'b' => '/b'])) === $fp($collection(['a' => '/a', 'b' => '/b'])),
+);
+ok(
+	'ITERATION ORDER does not change it, or a reordered rebuild would read as a change',
+	$fp($collection(['a' => '/a', 'b' => '/b'])) === $fp($collection(['b' => '/b', 'a' => '/a'])),
+);
+ok(
+	'CONTROL: a changed PATH does change it, so a real rebuild is never skipped',
+	$fp($collection(['a' => '/a'])) !== $fp($collection(['a' => '/moved'])),
+);
+ok(
+	'CONTROL: an added route changes it',
+	$fp($collection(['a' => '/a'])) !== $fp($collection(['a' => '/a', 'b' => '/b'])),
+);
+ok(
+	'CONTROL: a removed route changes it',
+	$fp($collection(['a' => '/a', 'b' => '/b'])) !== $fp($collection(['a' => '/a'])),
+);
+
+$withAlias = $collection(['a' => '/a']);
+$withAlias->addAlias('legacy', 'a');
+ok(
+	'CONTROL: an alias changes it, because aliases are dumped as rows too',
+	$fp($collection(['a' => '/a'])) !== $fp($withAlias),
+);
+
+$requirement = new RouteCollection();
+$requirement->add('a', new Route('/a', [], ['id' => '\\d+']));
+ok(
+	'CONTROL: a requirement that only affects compilation changes it',
+	$fp($collection(['a' => '/a'])) !== $fp($requirement),
+);
+// #endregion
+// #region cache bin indexes
+
+/**
+ * The bin schema that stops paying for indexes nothing reads.
+ *
+ * Every index is a charged row per insert on Durable Object billing, and rows written binds the
+ * regeneration ceiling. The host GCs `cache_data` alone, so the other bins carry two indexes for no
+ * reader. A pack edit alone would be undone by `ensureBinExists()`, which recreates a missing bin
+ * from `schemaDefinition()`; overriding the schema is what makes it durable.
+ */
+$schemaOf = static function (string $bin): array {
+	$backend = (new ReflectionClass(CfwCacheBackend::class))->newInstanceWithoutConstructor();
+	$prop = new ReflectionProperty(CfwCacheBackend::class, 'bin');
+	$prop->setValue($backend, $bin);
+	return $backend->schemaDefinition();
+};
+
+ok(
+	'CfwCacheBackend loads against real Drupal and extends the core backend',
+	is_a(CfwCacheBackend::class, DatabaseBackend::class, true),
+);
+ok(
+	'CfwCacheBackendFactory extends the core factory, so max-rows settings still apply',
+	is_a(CfwCacheBackendFactory::class, DatabaseBackendFactory::class, true),
+);
+
+$render = $schemaOf('cache_render');
+ok('an ordinary bin ships no expire index', !isset($render['indexes']['expire']));
+ok('an ordinary bin ships no created index', !isset($render['indexes']['created']));
+ok(
+	'and keeps its primary key, which is the row lookup every read uses',
+	($render['primary key'] ?? null) === ['cid'],
+);
+ok(
+	'and keeps every FIELD, so only the indexes changed',
+	array_keys($render['fields']) ===
+		array_keys(
+			(new ReflectionClass(DatabaseBackend::class))
+				->newInstanceWithoutConstructor()
+				->schemaDefinition()['fields'],
+		),
+);
+
+$data = $schemaOf('cache_data');
+ok(
+	'CONTROL: cache_data KEEPS expire, because gcPass() deletes on it',
+	isset($data['indexes']['expire']),
+);
+ok(
+	'CONTROL: cache_data KEEPS created, because gcPass() caps rows ordering by it',
+	isset($data['indexes']['created']),
+);
+ok(
+	'the kept list names cache_data and nothing else',
+	CfwCacheBackend::INDEXED_BINS === ['cache_data'],
+);
+
+// #endregion
 printf("\n%d passed, %d failed\n", $pass, $fail);
 exit($fail === 0 ? 0 : 1);
