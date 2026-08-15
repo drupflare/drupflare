@@ -9,7 +9,10 @@ use Drupal\Core\DependencyInjection\ServiceProviderInterface;
 use Drupal\drupflare\Cache\CfwCacheBackendFactory;
 use Drupal\drupflare\Http\FetchHandler;
 use Drupal\Core\Cache\DatabaseBackendFactory;
+use Drupal\Core\Lock\DatabaseLockBackend;
+use Drupal\Core\Lock\PersistentDatabaseLockBackend;
 use Drupal\Core\Routing\MatcherDumper;
+use Drupal\drupflare\Lock\CfwLockBackend;
 use Drupal\drupflare\Routing\CfwMatcherDumper;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Reference;
@@ -43,6 +46,7 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 	{
 		$this->registerRouterDumper($container);
 		$this->registerCacheBackend($container);
+		$this->registerLockBackend($container);
 
 		if (!$container->hasDefinition('http_handler_stack')) {
 			return;
@@ -128,6 +132,47 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 			return;
 		}
 		$definition->setClass(CfwCacheBackendFactory::class);
+	}
+
+	/**
+	 * Points `lock` and `lock.persistent` at the backend that does not need a clock.
+	 *
+	 * The database lock stores `microtime(TRUE) + $timeout` and expires a row when
+	 * `microtime(TRUE)` passes it. `microtime()` returns 0 here, so no lock ever expires and
+	 * `RouteBuilder::rebuild()` falls into `wait()`, which polls with `usleep()` for 30 seconds --
+	 * spinning rather than sleeping, because there is no other thread to yield to. Measured on a
+	 * deployed worker: a module install ends at 32,500 ms with `outcome: exceededCpu`.
+	 *
+	 * Both ids are swapped. `lock.persistent` is the one whose rows outlive a request, so leaving
+	 * it on the database backend would keep writing semaphore rows that can never be cleared.
+	 *
+	 * Guarded on the class so a site that already overrode either keeps its own backend: a site
+	 * running on a runtime with a working clock has no reason to take this.
+	 */
+	private function registerLockBackend(ContainerBuilder $container): void
+	{
+		$replaceable = [
+			'lock' => DatabaseLockBackend::class,
+			'lock.persistent' => PersistentDatabaseLockBackend::class,
+		];
+		foreach ($replaceable as $id => $coreClass) {
+			if (!$container->hasDefinition($id)) {
+				continue;
+			}
+			$definition = $container->getDefinition($id);
+			if ($definition->getClass() !== $coreClass) {
+				continue;
+			}
+			$definition->setClass(CfwLockBackend::class);
+			// core passes '@database'; this backend takes nothing, and a leftover argument is a
+			// fatal rather than an ignored extra
+			$definition->setArguments([]);
+			// core marks both lazy, and a lazy service resolves through a GENERATED proxy class
+			// that only exists for the class core named. Leaving it set logs "Missing proxy class
+			// Drupal\drupflare\ProxyClass\Lock\CfwLockBackend" on every container build; there is
+			// nothing to defer here anyway, since constructing this takes no database connection
+			$definition->setLazy(false);
+		}
 	}
 
 	/**

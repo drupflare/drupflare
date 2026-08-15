@@ -57,6 +57,7 @@ use Drupal\drupflare\Health\Finding;
 use Drupal\drupflare\Health\HealthLedger;
 use Drupal\drupflare\Health\RepairLadder;
 use Drupal\drupflare\Health\TripwireRegistry;
+use Drupal\drupflare\Lock\CfwLockBackend;
 use Drupal\drupflare\Ops\OpsRegistry;
 use Drupal\drupflare\Health\Tripwire\AccountNotRestored;
 use Drupal\drupflare\Health\Tripwire\CacheAnonymousPurity;
@@ -791,6 +792,72 @@ ok(
 ok(
 	'Html is imported rather than referenced fully qualified',
 	str_contains($resetter, 'use Drupal\Component\Utility\Html;'),
+);
+// #endregion
+// #region the lock that does not need a clock
+if (!interface_exists('Drupal\Core\Lock\LockBackendInterface')) {
+	eval('namespace Drupal\Core\Lock; interface LockBackendInterface {
+		public function acquire($name, $timeout = 30.0);
+		public function lockMayBeAvailable($name);
+		public function wait($name, $delay = 30);
+		public function release($name);
+		public function releaseAll($lock_id = NULL);
+		public function getLockId();
+	}');
+}
+
+$lock = new CfwLockBackend();
+ok('acquire() grants, because no second thread can hold it', $lock->acquire('router_rebuild'));
+ok('acquiring the same name again still grants', $lock->acquire('router_rebuild'));
+ok('a name nobody acquired is available', $lock->lockMayBeAvailable('never_taken'));
+// THE ONE THAT MATTERS: TRUE sends RouteBuilder back around to wait again, and waiting is what
+// burned 30 seconds of CPU
+ok(
+	'wait() reports the lock free rather than asking the caller to wait',
+	!$lock->wait('router_rebuild'),
+);
+ok(
+	'wait() on a name held by someone else also returns immediately',
+	!$lock->wait('held_elsewhere', 30),
+);
+$lock->release('router_rebuild');
+ok('a released lock is still acquirable', $lock->acquire('router_rebuild'));
+$lock->releaseAll();
+ok('releaseAll() leaves the backend usable', $lock->acquire('router_rebuild'));
+
+$id = $lock->getLockId();
+ok('the lock id is stable within one instance', $id === $lock->getLockId());
+ok('the lock id is non-empty', $id !== '');
+ok('a second instance gets a different id', (new CfwLockBackend())->getLockId() !== $id);
+
+// the differential, and it is the mechanism rather than the behaviour: a backend that reached for
+// either of these would reintroduce exactly the failure it replaces
+$lockSource = file_get_contents(__DIR__ . '/../src/Lock/CfwLockBackend.php');
+$lockCode = substr($lockSource, strpos($lockSource, 'final class'));
+ok('it never calls microtime(), which returns 0 here', !str_contains($lockCode, 'microtime('));
+ok('it never calls usleep(), which spins here', !str_contains($lockCode, 'usleep('));
+ok('it never touches the semaphore table', !str_contains($lockCode, 'semaphore'));
+
+$provider = file_get_contents(__DIR__ . '/../src/DrupflareServiceProvider.php');
+ok('the provider swaps `lock`', str_contains($provider, "'lock' => DatabaseLockBackend::class"));
+ok(
+	'and `lock.persistent`, whose rows outlive a request',
+	str_contains($provider, "'lock.persistent' => PersistentDatabaseLockBackend::class"),
+);
+ok(
+	'it clears core arguments, which this backend does not take',
+	str_contains($provider, 'setArguments([])'),
+);
+// core marks both lazy, and a lazy service resolves through a generated proxy class that exists
+// only for the class core named -- measured on the edge as "Missing proxy class
+// Drupal\drupflare\ProxyClass\Lock\CfwLockBackend" on every container build
+ok(
+	'it clears `lazy`, or the container looks for a proxy class that was never generated',
+	str_contains($provider, 'setLazy(false)'),
+);
+ok(
+	'it guards on the core class, so a site that already overrode the lock keeps its own',
+	str_contains($provider, '$definition->getClass() !== $coreClass'),
 );
 // #endregion
 echo "\n$pass passed, $fail failed\n";
