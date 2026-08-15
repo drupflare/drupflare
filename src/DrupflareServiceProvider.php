@@ -167,7 +167,7 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 	private function registerResetter(ContainerBuilder $container): void
 	{
 		$seed = [
-			// identity — the disclosure case
+			// identity, which is the disclosure case
 			'current_user',
 			'account_switcher',
 			'session',

@@ -8,6 +8,7 @@ use Closure;
 use Drupal;
 use Drupal\Component\Utility\Html;
 use Drupal\Core\DrupalKernelInterface;
+use Drupal\Core\Session\AnonymousUserSession;
 use ReflectionObject;
 use ReflectionProperty;
 use SplObjectStorage;
@@ -108,10 +109,8 @@ final class RequestResetter
 			$log['account_switcher'] = 'unwound';
 		}
 
-		if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
-			@session_write_close();
-			$log['session_closed'] = true;
-		}
+		$log['identity'] = $this->resetIdentity();
+		$log['session'] = $this->resetSession();
 
 		$log['page_cache_cid_cleared'] = $this->clearPageCacheCid();
 
@@ -125,6 +124,96 @@ final class RequestResetter
 		$log['html_seen_ids_reset'] = true;
 
 		return $log;
+	}
+
+	/**
+	 * Returns the current user to anonymous, because Drupal will not do it.
+	 *
+	 * DRUPAL NEVER RESETS THE ACCOUNT TO ANONYMOUS, and that is not an oversight -- in a fresh
+	 * process `AccountProxy` starts anonymous, so there is nothing to undo.
+	 * `AuthenticationSubscriber::onKernelRequestAuthenticate()` sets an account only when a
+	 * provider APPLIES and RETURNS one, and returns silently otherwise
+	 * (`core/lib/Drupal/Core/EventSubscriber/AuthenticationSubscriber.php:106`). On a persistent
+	 * interpreter "otherwise" means the previous visitor stays signed in.
+	 *
+	 * Measured: after one admin login, a request carrying NO cookie came back
+	 * "This route can only be accessed by anonymous users" from `/user/login`, with
+	 * `\Drupal::currentUser()->id()` still 1. That is the wrong-user disclosure this class was
+	 * written for, reached through the one service that has no `reset()` to call.
+	 *
+	 * @return array
+	 *   The uid before and after, so a reset that did not take is visible rather than assumed.
+	 */
+	private function resetIdentity(): array
+	{
+		$out = [];
+		try {
+			if (!$this->container->initialized('current_user')) {
+				return ['skipped' => 'not initialized'];
+			}
+			$proxy = $this->container->get('current_user');
+			$out['before'] = (int) $proxy->id();
+			if (method_exists($proxy, 'setAccount')) {
+				$proxy->setAccount(new AnonymousUserSession());
+			}
+			// setInitialAccountId() throws once an account is set, and the kernel calls it on the
+			// next boot-from-session path; clearing it keeps that route open
+			$reflection = new ReflectionObject($proxy);
+			if ($reflection->hasProperty('id')) {
+				$reflection->getProperty('id')->setValue($proxy, 0);
+			}
+			$out['after'] = (int) $proxy->id();
+		} catch (Throwable $e) {
+			$out['error'] = substr($e->getMessage(), 0, 120);
+		}
+		return $out;
+	}
+
+	/**
+	 * Ends the current visitor's session so the next one cannot inherit it.
+	 *
+	 * Writing comes first and is not optional: the visitor's session belongs in the `sessions`
+	 * table. What must not survive is the copy in memory.
+	 *
+	 * @return array
+	 *   What was closed and which flags were cleared, so a leak that survives this is visible.
+	 */
+	private function resetSession(): array
+	{
+		if (!function_exists('session_status')) {
+			return ['ext' => false];
+		}
+
+		$out = ['ext' => true, 'closed' => false, 'storage' => []];
+		if (session_status() === PHP_SESSION_ACTIVE) {
+			@session_write_close();
+			$out['closed'] = true;
+		}
+		$_SESSION = [];
+
+		foreach (['session', 'session_manager'] as $id) {
+			try {
+				if (!$this->container->initialized($id)) {
+					continue;
+				}
+				$service = $this->container->get($id);
+				if (!is_object($service)) {
+					continue;
+				}
+				$reflection = new ReflectionObject($service);
+				foreach (['started', 'closed', 'startedLazy'] as $name) {
+					if (!$reflection->hasProperty($name)) {
+						continue;
+					}
+					$reflection->getProperty($name)->setValue($service, false);
+					$out['storage'][] = $id . '.' . $name;
+				}
+			} catch (Throwable $e) {
+				$out['errors'][$id] = substr($e->getMessage(), 0, 120);
+			}
+		}
+
+		return $out;
 	}
 
 	/**
