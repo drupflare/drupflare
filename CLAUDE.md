@@ -14,8 +14,11 @@ its in-memory filesystem. So:
   assertions, plus `DRUPAL_ROOT=<worker>/drupal-src php tests/load-classes.php` - **77**.
   Re-measure before quoting either; both have been stale here in both directions.
 - A fix made only in the worker ships **untested**; a fix made only here **never reaches the edge**.
-- The worker's `bun run check:sync` compares both copies plus the packed artifact. Run the worker's
-  `bun run assets:driver` after any change here, or the packed copy goes stale - it has done so twice.
+- **There is no `check:sync` in the worker any more.** It and `scripts/check-module-sync.ts` were
+  deleted, so nothing compares this repo's files to the copy under `worker/drupal/drupflare/`. What
+  survives is `worker/tests/node/driver-pack.spec.ts`, which asserts `assets/driver.json` matches
+  that copy byte for byte. Run the worker's `bun run assets:driver` after any change here, or the
+  packed copy goes stale - it has done so twice.
 
 Drupal **11.3 or newer**, and that is measured rather than cautious: `CfwImageToolkit` is a
 guaranteed fatal below it, because `ImageToolkitInterface extends ContainerFactoryPluginInterface`
