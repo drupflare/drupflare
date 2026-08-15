@@ -6,7 +6,11 @@ namespace Drupal\drupflare;
 
 use Drupal\Core\DependencyInjection\ContainerBuilder;
 use Drupal\Core\DependencyInjection\ServiceProviderInterface;
+use Drupal\drupflare\Cache\CfwCacheBackendFactory;
 use Drupal\drupflare\Http\FetchHandler;
+use Drupal\Core\Cache\DatabaseBackendFactory;
+use Drupal\Core\Routing\MatcherDumper;
+use Drupal\drupflare\Routing\CfwMatcherDumper;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Reference;
 
@@ -37,6 +41,9 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 	 */
 	public function register(ContainerBuilder $container): void
 	{
+		$this->registerRouterDumper($container);
+		$this->registerCacheBackend($container);
+
 		if (!$container->hasDefinition('http_handler_stack')) {
 			return;
 		}
@@ -68,6 +75,59 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 			->setArguments([$container->getDefinition('drupflare.fetch_handler')]);
 
 		$this->registerResetter($container);
+	}
+
+	/**
+	 * Points `router.dumper` at the fingerprinting subclass.
+	 *
+	 * A router rebuild is 419 routes against three indexes -- 2,095 charged rows -- written whether
+	 * or not the collection changed, and rows written is the meter that binds regeneration.
+	 * `ModuleInstaller::doInstall()` rebuilds the container once per module, which resets
+	 * `RouteProviderLazyBuilder::$rebuilt` and re-arms the trigger, so an install with dependencies
+	 * dumps the same routes repeatedly.
+	 *
+	 * REGISTERED HERE for the reason the collapse cannot live anywhere else: a service provider runs
+	 * on every container build, so this survives exactly the rebuild that discards a decorated
+	 * `router.builder` or any counter held in the container.
+	 *
+	 * Core's own arguments and `backend_overridable` tag are preserved, so a site that overrode the
+	 * dumper itself keeps its override.
+	 */
+	private function registerRouterDumper(ContainerBuilder $container): void
+	{
+		if (!$container->hasDefinition('router.dumper')) {
+			return;
+		}
+		$definition = $container->getDefinition('router.dumper');
+		if ($definition->getClass() !== MatcherDumper::class) {
+			return;
+		}
+		$definition->setClass(CfwMatcherDumper::class);
+		$definition->setLazy(false);
+	}
+
+	/**
+	 * Points `cache.backend.database` at the factory that drops the unread bin indexes.
+	 *
+	 * Every cache bin carries an `expire` and a `created` index on top of its `cid` primary key, and
+	 * on Durable Object billing each one is another charged row per insert. Measured in workerd: 10
+	 * rows cost 40 charged rows with both and 20 without, exactly 2.00x. The only reader is the
+	 * host's own GC, which caps `cache_data` alone -- so 13 of the 14 bins pay for indexes nothing
+	 * queries.
+	 *
+	 * A factory subclass rather than a class swap on the backend, because core's factory constructs
+	 * `DatabaseBackend` directly instead of resolving a class name.
+	 */
+	private function registerCacheBackend(ContainerBuilder $container): void
+	{
+		if (!$container->hasDefinition('cache.backend.database')) {
+			return;
+		}
+		$definition = $container->getDefinition('cache.backend.database');
+		if ($definition->getClass() !== DatabaseBackendFactory::class) {
+			return;
+		}
+		$definition->setClass(CfwCacheBackendFactory::class);
 	}
 
 	/**
