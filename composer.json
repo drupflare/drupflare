@@ -33,7 +33,7 @@
 		"guzzlehttp/psr7": "^2.4",
 		"psr/http-message": "^2.0",
 		"psr/log": "^3.0",
-		"symfony/dependency-injection": "^7.0"
+		"symfony/dependency-injection": "^8.0"
 	},
 	"suggest": {
 		"drupflare/rom": "The Drupal 11 database driver for Cloudflare Durable Object SQLite. Needed when the Worker stores the site in the Durable Object rather than in an external database."
