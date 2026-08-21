@@ -90,7 +90,7 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 	 * `RouteProviderLazyBuilder::$rebuilt` and re-arms the trigger, so an install with dependencies
 	 * dumps the same routes repeatedly.
 	 *
-	 * REGISTERED HERE for the reason the collapse cannot live anywhere else: a service provider runs
+	 * Registered here for the reason the collapse cannot live anywhere else: a service provider runs
 	 * on every container build, so this survives exactly the rebuild that discards a decorated
 	 * `router.builder` or any counter held in the container.
 	 *
@@ -179,8 +179,15 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 	 * Whether the interpreter can suspend, which is what FetchHandler requires.
 	 *
 	 * `vrzno_await()` is compiled against Asyncify. The shipping build sets
-	 * ASYNCIFY=0 to save 42% of the bundle, so the symbol is simply absent; a JSPI
-	 * build provides the same semantics without the bloat.
+	 * ASYNCIFY=0 to save 42% of the bundle; a JSPI build provides the same
+	 * semantics without the bloat.
+	 *
+	 * THE SYMBOL IS NOT ABSENT, and this docblock said it was until it was
+	 * measured. On the shipping 8.5 interpreter `function_exists('vrzno_await')`
+	 * is TRUE - the extension declares it either way. What ASYNCIFY=0 removed is
+	 * the `Asyncify` the glue calls, so reaching it throws a ReferenceError out of
+	 * a wasm import that PHP cannot catch. `function_exists()` is therefore not a
+	 * suspension probe and must never be used as one.
 	 *
 	 * Probed rather than configured, because a settings flag would drift from the
 	 * binary that is actually loaded, and the binary is what decides.

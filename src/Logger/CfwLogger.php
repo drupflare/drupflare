@@ -35,6 +35,11 @@ class CfwLogger implements LoggerInterface
 		7 => 'debug',
 	];
 
+	/**
+	 * Error types a shutdown reports; warnings already went through the logger.
+	 */
+	private const FATAL_TYPES = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR];
+
 	public function __construct(private readonly LogMessageParserInterface $parser) {}
 
 	/**
@@ -108,20 +113,38 @@ class CfwLogger implements LoggerInterface
 		};
 
 		register_shutdown_function(static function () use ($ship): void {
-			$error = error_get_last();
-			// only the fatal classes; warnings already went through the logger
-			if (
-				$error !== null &&
-				in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)
-			) {
-				$ship([
-					'level' => 'error',
-					'channel' => 'php-fatal',
-					'message' => $error['message'],
-					'file' => $error['file'],
-					'line' => $error['line'],
-				]);
+			$payload = self::fatalPayload(error_get_last());
+			if ($payload !== null) {
+				$ship($payload);
 			}
 		});
+	}
+
+	/**
+	 * The payload a shutdown should ship, or NULL when the last error is not a fatal.
+	 *
+	 * Split out of the shutdown closure because that closure runs only at process teardown,
+	 * after any coverage driver has stopped, so nothing could reach the one decision here that
+	 * can be wrong: which error types count. A warning shipped as `php-fatal` is noise, and an
+	 * E_PARSE dropped is the silence this handler exists to remove.
+	 *
+	 * @param array|null $error
+	 *   The result of error_get_last().
+	 *
+	 * @return array|null
+	 *   The payload, or NULL when there is nothing to report.
+	 */
+	public static function fatalPayload(?array $error): ?array
+	{
+		if ($error === null || !in_array($error['type'] ?? 0, self::FATAL_TYPES, true)) {
+			return null;
+		}
+		return [
+			'level' => 'error',
+			'channel' => 'php-fatal',
+			'message' => $error['message'] ?? '',
+			'file' => $error['file'] ?? '',
+			'line' => $error['line'] ?? 0,
+		];
 	}
 }

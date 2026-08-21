@@ -5,7 +5,7 @@ namespace Drupal\drupflare\Ops;
 /**
  * The operations surface that replaces Drush.
  *
- * DO NOT SHIP DRUSH. It is a large dependency whose whole job is to give a shell a way into
+ * Do not ship drush. It is a large dependency whose whole job is to give a shell a way into
  * Drupal, and there is no shell here -- the runtime has no `exec`, no `proc_open` and no sockets.
  * Eight operations get ~95% of the value at a fraction of the pack.
  *

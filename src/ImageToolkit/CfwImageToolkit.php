@@ -20,7 +20,7 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
  * emit correct width and height attributes, and reports every manipulation as
  * successful-but-deferred so image styles do not fail.
  *
- * THE HONEST LIMITATION. `apply()` returning TRUE without touching bytes means a
+ * `apply()` returning TRUE without touching bytes means a
  * style-derived file on disk is the original. That is correct for delivery through
  * an image-resizing CDN and wrong for anything that reads the derivative's own
  * pixels. Drupal core does not; contrib that does will see full-size images.

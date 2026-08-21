@@ -13,12 +13,12 @@ use Drupal\drupflare\Host;
 /**
  * Install-time requirements for the Drupflare compatibility layer.
  *
- * WHY THIS IS A CLASS AND NOT hook_requirements(). Drupal 11.3 deprecates a procedural
+ * Drupal 11.3 deprecates a procedural
  * `<module>_requirements()` that carries no `#[LegacyRequirementsHook]` attribute, and splits
  * the phases: `core/includes/install.inc:853` scans `src/Install/Requirements/` for this
  * interface, and the status report goes through `#[Hook('runtime_requirements')]` instead.
  *
- * NOTHING HERE IS AN ERROR, deliberately. Every capability this module provides is satisfied by
+ * Nothing here is an error. Every capability this module provides is satisfied by
  * a host function the runtime installs, and a deployment that installs none of them still gets a
  * module that refuses loudly at the point of use rather than one that fails to install. Returning
  * RequirementSeverity::Error would make the module uninstallable on a plain PHP host, which is

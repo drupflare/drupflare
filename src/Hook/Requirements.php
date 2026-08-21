@@ -13,7 +13,7 @@ use Drupal\drupflare\StreamWrapper\CfwFileStreamWrapper;
 /**
  * Status-report entries for the Drupflare compatibility layer.
  *
- * WHAT THE FIRST ENTRY IS FOR, because it is the one that earns its place. On this runtime the
+ * On this runtime the
  * NATIVE http/https wrapper is advertised by `stream_get_wrappers()` and reading through it
  * throws a JavaScript `ReferenceError: Asyncify is not defined` from inside the wasm import.
  * That is not a PHP exception: `@` does not suppress it, `catch (Throwable)` never sees it, and

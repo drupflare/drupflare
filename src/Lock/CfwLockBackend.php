@@ -9,7 +9,7 @@ use Drupal\Core\Lock\LockBackendInterface;
 /**
  * A lock backend for a runtime that has one thread and no clock.
  *
- * DRUPAL'S DATABASE LOCK CANNOT WORK HERE, AND FAILS BY BURNING CPU RATHER THAN BY ERRORING.
+ * Drupal's database lock cannot work here, and fails by burning CPU rather than by erroring.
  * `DatabaseLockBackend::acquire()` stores `microtime(TRUE) + $timeout` as the expiry and
  * `lockMayBeAvailable()` releases the row when `microtime(TRUE) > $expire`. In this runtime
  * `microtime()` returns 0, so a row is written with `expire = 30` and tested against `now = 0`:
@@ -26,7 +26,7 @@ use Drupal\Core\Lock\LockBackendInterface;
  * exceeded its CPU time limit and was reset" -- against 1,746 ms for the same install in a lane
  * where `microtime()` works. The install was never slow; it spent 30 seconds waiting.
  *
- * A LOCK IS ALSO UNNECESSARY, which is why this grants rather than fixes the clock. One site is one
+ * A lock is also unnecessary, which is why this grants rather than fixes the clock. One site is one
  * Durable Object is one thread, the input gate serialises every request into it, and PHP inside it
  * is single-threaded. The concurrent writer a lock exists to exclude cannot be constructed. So
  * `acquire()` always succeeds and `wait()` never waits.
