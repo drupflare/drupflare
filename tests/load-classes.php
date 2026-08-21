@@ -6,7 +6,7 @@
  *
  * Also drives the behaviour that does not need a Worker.
  *
- * WHY THIS EXISTS, AND WHAT php -l CANNOT SEE. CfwImageToolkit was lint-clean for a
+ * CfwImageToolkit was lint-clean for a
  * day with a guaranteed fatal in it:
  *
  *   Fatal error: Class Drupal\drupflare\ImageToolkit\CfwImageToolkit contains 2
@@ -19,7 +19,7 @@
  * raised the first time something autoloads the class, and `php -l` is blind to it.
  * This is the gate that catches the next one.
  *
- * WHAT IT DOES NOT PROVE. Nothing here runs inside a Worker, so no host function is
+ * Nothing here runs inside a Worker, so no host function is
  * installed. Every capability is therefore exercised in its ABSENT state, which is
  * the control the runtime round could not provide: a missing capability must refuse
  * by name rather than return something plausible. The 26 assertions that drive these
@@ -274,7 +274,7 @@ ok(
 );
 ok('the wrapper is the one PHP now resolves', in_array('https', stream_get_wrappers(), true));
 
-// THE PACKAGE IS THE IMPLEMENTATION, and this module supplies only the transport. A second copy of
+// The package is the implementation, and this module supplies only the transport. A second copy of
 // the wrapper used to live here and drifted from the published one; asserting the inheritance is
 // what stops it growing back.
 ok(

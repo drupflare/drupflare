@@ -8,7 +8,7 @@
  * coverage. This wraps one: start collection, require the suite, and write the reports from a
  * shutdown handler because every suite ends with exit().
  *
- * ONE SUITE PER RUN, and that is a property of the suites rather than a limitation here. Both end
+ * One suite per run, and that is a property of the suites rather than a limitation here. Both end
  * in exit(), so requiring the second after the first is dead code. They also need different
  * things: load-classes.php needs a real Drupal root, health-suite.php needs none. Two runs
  * produce two clover files, and Codecov merges reports across uploads -- see
@@ -48,13 +48,38 @@ $suiteFile = (static function (): string {
 		'health' => ['file' => 'health-suite.php', 'needsRoot' => false],
 	];
 
+	// no suite named means every suite, one child process each. The child is forced rather than
+	// chosen: both suites end in exit() and both declare ok(), so requiring the second after the
+	// first is dead code AND a fatal redeclare. `bun run test:coverage` passes no argument, so
+	// without this the package script exits 2 and measures nothing -- which is the same defect
+	// class as a runner that silently executes one suite of three.
+	if ($suite === '') {
+		$failed = 0;
+		foreach (array_keys($suites) as $name) {
+			$argv = [PHP_BINARY, __FILE__, $name];
+			if ($suites[$name]['needsRoot'] && $root !== null) {
+				$argv[] = $root;
+			}
+			$status = 0;
+			$output = [];
+			echo "\n== $name ==\n";
+			exec(implode(' ', array_map('escapeshellarg', $argv)) . ' 2>&1', $output, $status);
+			echo implode("\n", $output), "\n";
+			if ($status !== 0) {
+				$failed++;
+				fwrite(STDERR, "the $name suite exited $status\n");
+			}
+		}
+		exit($failed === 0 ? 0 : 1);
+	}
+
 	if (!isset($suites[$suite])) {
 		fwrite(
 			STDERR,
 			'Pass a suite name: ' .
 				implode(', ', array_keys($suites)) .
-				".\n" .
-				"Usage: php tests/coverage.php <suite> [/path/to/drupal-root]\n",
+				", or none to run them all.\n" .
+				"Usage: php tests/coverage.php [<suite>] [/path/to/drupal-root]\n",
 		);
 		exit(2);
 	}
