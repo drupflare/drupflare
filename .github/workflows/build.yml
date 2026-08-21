@@ -72,6 +72,14 @@ jobs:
           php-version: ${{ matrix.php }}
           extensions: json, mbstring
           coverage: none
+      - name: Cache Composer Downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/composer
+          key: composer-${{ matrix.php }}-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ matrix.php }}-
+      - name: Install Composer Dependencies
+        run: composer install --no-interaction --no-progress
       - name: Run the Health Suite
         run: php tests/health-suite.php
 
