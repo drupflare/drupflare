@@ -21,7 +21,38 @@ namespace {
 	use Drupal\Core\DependencyInjection\ContainerBuilder;
 	use Drupal\drupflare\RequestResetter;
 
-	require dirname(__DIR__, 2) . '/vendor/autoload.php';
+	// the same two candidates health-suite.php searches, because this file runs from a checkout
+	// that has its own vendor/ AND from the worker's gate, where the sibling is checked out beside
+	// a full Drupal tree and composer never runs
+	$module = dirname(__DIR__, 2);
+	$candidates = [
+		$module . '/vendor/autoload.php',
+		dirname(__DIR__, 4) . '/drupal-src/vendor/autoload.php',
+	];
+	foreach ($candidates as $candidate) {
+		if (is_file($candidate)) {
+			require_once $candidate;
+			break;
+		}
+	}
+
+	// only composer's autoload maps this namespace, so the fallback tree needs it supplied
+	spl_autoload_register(function (string $class) use ($module): void {
+		$prefix = 'Drupal\\drupflare\\';
+		if (!str_starts_with($class, $prefix)) {
+			return;
+		}
+		$file =
+			$module . '/src/' . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+		if (is_file($file)) {
+			require_once $file;
+		}
+	});
+
+	if (!class_exists(ContainerBuilder::class)) {
+		fwrite(STDERR, "no autoloader reached: neither vendor/ nor a sibling drupal-src\n");
+		exit(3);
+	}
 
 	if ((new ReflectionClass('Drupal\Core\Form\FormState'))->hasProperty('anyErrors')) {
 		fwrite(STDERR, "the stub did not win the name; composer answered first\n");
