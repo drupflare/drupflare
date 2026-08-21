@@ -31,6 +31,7 @@ declare(strict_types=1);
 use SebastianBergmann\CodeCoverage\CodeCoverage;
 use SebastianBergmann\CodeCoverage\Driver\Selector;
 use SebastianBergmann\CodeCoverage\Filter;
+use SebastianBergmann\CodeCoverage\Node\Directory;
 use SebastianBergmann\CodeCoverage\Report\Clover;
 use SebastianBergmann\CodeCoverage\Report\Text;
 use SebastianBergmann\CodeCoverage\Report\Thresholds;
@@ -162,9 +163,29 @@ $suiteFile = (static function (): string {
 			);
 			exit(2);
 		}
+		// php-code-coverage 12 takes a Node\Directory where 10 took the collector, and the writers
+		// moved at different times -- so ask each writer's own signature rather than the library
+		// version. `rom` already does this; stream-http and this file did not, and CI failed with
+		// "Argument #1 ($report) must be of type Node\Directory, CodeCoverage given".
+		$node = null;
+		$reportFor = static function (object $writer) use (
+			$coverage,
+			&$node,
+		): CodeCoverage|Directory {
+			$first = (new ReflectionMethod($writer, 'process'))->getParameters()[0] ?? null;
+			$type = $first?->getType();
+			if ($type instanceof ReflectionNamedType && $type->getName() === Directory::class) {
+				// getReport() walks the whole tree, so it is built at most once
+				return $node ??= $coverage->getReport();
+			}
+			return $coverage;
+		};
+
 		try {
-			(new Clover())->process($coverage, $out . "/drupflare-$suite.clover.xml");
-			$summary = (new Text(Thresholds::default(), false, true))->process($coverage, false);
+			$clover = new Clover();
+			$text = new Text(Thresholds::default(), false, true);
+			$clover->process($reportFor($clover), $out . "/drupflare-$suite.clover.xml");
+			$summary = $text->process($reportFor($text), false);
 		} catch (Throwable $e) {
 			fwrite(STDERR, "\nCoverage report failed: " . $e->getMessage() . "\n");
 			return;
