@@ -10,20 +10,20 @@ use Drupal\drupflare\Host;
 /**
  * A `public://` and `private://` stream wrapper backed by the Durable Object's own SQL.
  *
- * WHY THIS EXISTS. Drupal's file system is MEMFS, which is isolate-local and ephemeral. An upload
+ * Drupal's file system is MEMFS, which is isolate-local and ephemeral. An upload
  * therefore lives exactly as long as the isolate that received it, while the `file_managed` row
  * describing it is written to durable storage and survives -- so a site accumulates entities that
  * point at nothing. That is not a performance characteristic, it is "uploads do not work", and it
  * blocks every media-shaped part of Drupal.
  *
- * WHY IT CAN BE FULLY SYNCHRONOUS, unlike HttpsStreamWrapper. PHP cannot await, so a capability
+ * Fully synchronous, unlike HttpsStreamWrapper: PHP cannot await, so a capability
  * that needs the network has to be split into a queue and a drain (see `installCapabilities()` in
  * the host). `ctx.storage.sql` needs no await at all from inside the Durable Object, so every call
  * here returns a real, committed result. That is the entire reason the host stores files in DO SQL
  * and treats R2 as an offload rather than as the durable copy: it is the only arrangement in which
  * a synchronous stream wrapper can tell PHP the truth about whether a write happened.
  *
- * WHAT IT DELIBERATELY DOES NOT DO. It does not stream. A write buffers in memory until
+ * It does not stream. A write buffers in memory until
  * `stream_flush()`/`stream_close()` and lands as one host call; a read fetches the whole file on
  * open. Incremental streaming would need to suspend the interpreter mid-call, which requires JSPI.
  * The host stores chunked, so a large read is divisible on ITS side -- what is not divisible is a
@@ -473,7 +473,7 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 
 	// #region Drupal's StreamWrapperInterface
 	//
-	// WHY THE DRUPAL INTERFACE AND NOT JUST `stream_wrapper_register()`. `public://` already
+	// `public://` already
 	// belongs to Drupal: `StreamWrapperManager` registers `PublicStream` for it during container
 	// boot, so a bare `stream_wrapper_register('public', ...)` either loses the race or is undone
 	// the next time the manager runs. The supported override is the `stream_wrapper` service tag,
@@ -548,7 +548,7 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	 * these bytes. Returning something plausible here is how a caller ends up passing an invented
 	 * path to a native file function and getting a confusing failure a long way from the cause.
 	 *
-	 * NO PHP RETURN TYPE, deliberately, and core is the reason. `StreamWrapperInterface` tags this
+	 * No PHP return type, and core is the reason: `StreamWrapperInterface` tags this
 	 * `@return string` while the prose directly beneath says "or FALSE on failure or if the
 	 * registered wrapper does not provide an implementation" -- and core's own `LocalStream`
 	 * returns `getLocalPath()`, which is `string|false`. So the tag is wrong upstream. Declaring

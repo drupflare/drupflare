@@ -9,7 +9,7 @@ use RuntimeException;
 /**
  * Thrown when a shimmed function cannot be served, carrying WHAT and WHY.
  *
- * THIS IS THE POINT OF THE WHOLE LAYER. A silent empty return is indistinguishable from a real
+ * A silent empty return is indistinguishable from a real
  * empty result: `curl_exec()` returning FALSE reads as "the server said nothing", and
  * `openssl_digest()` returning FALSE reads as "unsupported algorithm". Both are what a caller sees
  * when the truth is "no sockets here" or "crypto.subtle has no md5". That ambiguity is this

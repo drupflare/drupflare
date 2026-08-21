@@ -13,12 +13,20 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\drupflare\Host;
 
 /**
- * Sends mail through the Worker's email binding instead of SMTP.
+ * Hands mail to the Worker, which owns the transport.
  *
- * Workers have no sockets, so PHP's mail() and every SMTP transport are
- * unavailable -- not slow, absent. Drupal's mail system is a plugin, so the whole
- * substitution is this class plus one line of config
- * (system.mail.interface.default), and no module needs changing.
+ * PHP-in-wasm has no sockets and no mail(), so every PHP mail transport is
+ * unavailable -- not slow, absent. The Worker does have sockets, so what happens on
+ * the other side of this call is a Cloudflare send or a real SMTP submission
+ * depending on how the site is configured; see src/ops/mail.ts in the worker repo.
+ * Drupal's mail system is a plugin, so the whole substitution is this class plus one
+ * line of config (system.mail.interface.default), and no module needs changing.
+ *
+ * A TRUE RETURN MEANS ACCEPTED, NOT DELIVERED. The host commits the message and
+ * sends it between PHP runs, because PHP calls the host synchronously and the
+ * network needs an await. That is what an SMTP submission server means by 250, and
+ * a failure after the hand-off is reported on the Worker's own diagnostics rather
+ * than here.
  *
  * The format() half is unchanged from core's behaviour on purpose: converting HTML
  * to text and wrapping lines is Drupal's business, not the transport's.
@@ -62,7 +70,7 @@ class CfwMail implements MailInterface
 			// returning FALSE makes Drupal log a mail failure, which is the truthful
 			// outcome; throwing would break whatever content operation triggered it
 			Drupal::logger('drupflare')->error(
-				'No email binding is configured for this Worker, so mail to @to was not sent.',
+				'This site is not running inside a Worker, so mail to @to was not sent.',
 				['@to' => $message['to'] ?? '(none)'],
 			);
 			return false;

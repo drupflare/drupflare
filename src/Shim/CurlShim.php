@@ -14,7 +14,7 @@ use GuzzleHttp\Psr7\Request;
  * not all of curl -- it is the subset ordinary contrib code actually uses, and every option outside
  * it is refused by name rather than ignored.
  *
- * IGNORING AN OPTION IS THE FAILURE MODE THIS AVOIDS. `CURLOPT_SSL_VERIFYPEER => false` silently
+ * Ignoring an option is the failure mode this avoids. `CURLOPT_SSL_VERIFYPEER => false` silently
  * dropped is a security change the caller believes it made; `CURLOPT_TIMEOUT` silently dropped is a
  * hang the caller believes it guarded. So an unrecognised option throws with its numeric constant
  * in the message.
