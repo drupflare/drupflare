@@ -86,6 +86,20 @@
 	</rule>
 
 	<!--
+		Same reasoning as ValidGlobal above, and the same scope. A suite here is a standalone
+		PHP script rather than a PSR-4 tree, and its fakes - a spy service, a stub middleware
+		link, a fake host - are only meaningful next to the assertions that drive them. One
+		file per class would turn one readable suite into a dozen fixtures nothing else loads,
+		and neither sniff is about a class a consumer ever installs.
+	-->
+	<rule ref="Squiz.Classes.ClassFileName">
+		<exclude-pattern>tests/*</exclude-pattern>
+	</rule>
+	<rule ref="DrupalPractice.General.ClassName.ClassPrefix">
+		<exclude-pattern>tests/*</exclude-pattern>
+	</rule>
+
+	<!--
 		RequestResetter::verify() is a diagnostic: its job is to read the SAME global container the
 		rest of the request reads, to prove the reset actually happened. Injecting the service
 		would observe a different object and the check would pass while the bug remained.

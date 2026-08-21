@@ -10,8 +10,8 @@ Published as `drupflare/drupflare`; consumed by `drupflare/worker`.
 the edge**. The worker packs that copy into `assets/driver.json`, which the Durable Object mounts into
 its in-memory filesystem. So:
 
-- **This repo's suite is the authority on behaviour.** `php tests/health-suite.php` - **177**
-  assertions, plus `DRUPAL_ROOT=<worker>/drupal-src php tests/load-classes.php` - **77**.
+- **This repo's suite is the authority on behaviour.** `php tests/health-suite.php` - **553**
+  assertions, plus `DRUPAL_ROOT=<worker>/drupal-src php tests/load-classes.php` - **94**.
   Re-measure before quoting either; both have been stale here in both directions.
 - A fix made only in the worker ships **untested**; a fix made only here **never reaches the edge**.
 - **There is no `check:sync` in the worker any more.** It and `scripts/check-module-sync.ts` were
@@ -28,7 +28,7 @@ checkout: `php tests/load-classes.php` fatals on 11.0.0, 11.1.0 and 11.2.0 and p
 11.3.0. No 11.2.x patch backported the trait.
 
 PHP **8.3 or newer**, matrixed across 8.3, 8.4 and 8.5 in `build.yml`, matching `rom` and
-`stream-http`. Measured on 8.5.7 with `error_reporting=E_ALL`: 177 health and 77 class-loading
+`stream-http`. Measured on 8.5.7 with `error_reporting=E_ALL`: 553 health and 94 class-loading
 assertions pass with no deprecation notices, and `src/` carries no implicit nullable parameters or
 dynamic properties.
 

@@ -197,15 +197,17 @@ persistent kernel is about to serve stale pages, so treat it as a failure rather
 
 | Lane                       | Command                                    | Count    | Needs                              |
 | -------------------------- | ------------------------------------------ | -------- | ---------------------------------- |
-| syntax                     | `php tests/lint.php`                       | 38 files | nothing but PHP                    |
-| the health layer           | `php tests/health-suite.php`               | **177**  | nothing but PHP                    |
-| class loading and refusals | `php tests/load-classes.php <drupal-root>` | **77**   | a Drupal 11.3+ root with `vendor/` |
+| syntax                     | `php tests/lint.php`                       | 44 files | nothing but PHP                    |
+| the health layer           | `php tests/health-suite.php`               | **553**  | nothing but PHP                    |
+| class loading and refusals | `php tests/load-classes.php <drupal-root>` | **94**   | a Drupal 11.3+ root with `vendor/` |
 | the capabilities executing | `curl localhost:8787/capability`           | **26**   | `drupflare/worker` running         |
 
-Coverage of the first three runs one suite at a time, because each ends in `exit()`:
+Each suite ends in `exit()`, so coverage runs one per process. With no suite named it runs them
+all, one child each, and reports every one:
 
 ```sh
-php tests/coverage.php health
+php tests/coverage.php        # every suite
+php tests/coverage.php health # just one
 php tests/coverage.php classes /path/to/drupal-root
 ```
 
@@ -300,8 +302,8 @@ composer run lint       # phpcs: docs, naming, API misuse
 composer run analyze    # phpstan level 5, --memory-limit=1G
 bunx prettier --check . # layout, every language including PHP
 
-php tests/health-suite.php                             # 177 assertions
-DRUPAL_ROOT=/path/to/drupal php tests/load-classes.php # 77; loads every class for real
+php tests/health-suite.php                             # 553 assertions
+DRUPAL_ROOT=/path/to/drupal php tests/load-classes.php # 94; loads every class for real
 ```
 
 Layout is Prettier's, tabs rendered 4 wide at `printWidth` 100. `phpcs.xml.dist` gives up the sniffs
