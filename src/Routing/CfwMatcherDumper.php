@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Drupal\drupflare\Routing;
 
 use Drupal\Core\Routing\MatcherDumper;
-use Symfony\Component\Routing\Route;
 use Symfony\Component\Routing\RouteCollection;
 use Throwable;
 
@@ -15,7 +14,8 @@ use Throwable;
  * A rebuild is one `DELETE FROM router` plus every route re-inserted, unconditionally, whether or
  * not the collection changed. Measured on the shipped pack that is **419 routes against three
  * indexes -- 2,095 charged rows** -- and rows written is the meter that binds the regeneration
- * ceiling.
+ * ceiling. {@see ensurePartialAliasIndex()} takes the third index off the 402 routes that store a
+ * NULL alias, so a rebuild is **1,693**: the 17 routes that DO carry an alias still pay for it.
  *
  * Those rebuilds repeat. `ModuleInstaller::doInstall()` calls `updateKernel()` once per module,
  * which rebuilds the container, which constructs a fresh `RouteProviderLazyBuilder` whose
@@ -78,12 +78,90 @@ class CfwMatcherDumper extends MatcherDumper
 	}
 
 	/**
+	 * Creates the table, then makes its alias index partial.
+	 *
+	 * {@inheritdoc}
+	 */
+	protected function ensureTableExists(): bool
+	{
+		$created = parent::ensureTableExists();
+		$this->ensurePartialAliasIndex();
+		return $created;
+	}
+
+	/**
+	 * The router schema without core's full alias index.
+	 *
+	 * Drupal's schema API cannot express a partial index, so the index is omitted here and created
+	 * as SQL by {@see ensurePartialAliasIndex()}. Leaving core's entry in would create the full
+	 * index first and pay for it once before the swap.
+	 *
+	 * @return array
+	 *   The schema API definition, minus the `alias` index.
+	 */
+	protected function schemaDefinition(): array
+	{
+		$schema = parent::schemaDefinition();
+		unset($schema['indexes']['alias']);
+		return $schema;
+	}
+
+	/**
+	 * Replaces the full `alias` index with one that stores only the rows that have an alias.
+	 *
+	 * Every index on a table is a charged row per insert, so the full index bills all 419 routes
+	 * while **402 of them are NULL** -- 96%. A rebuild is one DELETE plus one INSERT per route, and
+	 * the insert side falls from 4 charged rows per route to 3.
+	 *
+	 * Both queries core aims at the column keep working, and one changes plan. `getRouteAliases()`
+	 * filters `condition('alias', $name)`, which implies the predicate, so sqlite still answers it
+	 * with `SEARCH router USING INDEX router_alias`. `getAllRoutes()` filters `isNull('alias')`,
+	 * which the full index DID serve -- sqlite treats `IS NULL` as an indexable equality -- and now
+	 * scans instead. That query returns 402 of 419 rows and reads the `route` blob for each, so the
+	 * index was seeking almost the whole table; and it enumerates the collection rather than
+	 * matching a request, so no page render reaches it. Route matching goes through
+	 * `pattern_outline` and is untouched.
+	 *
+	 * Idempotent, and never fatal: an index that cannot be swapped is a cost rather than a
+	 * correctness problem, so the site keeps serving on the full index.
+	 */
+	protected function ensurePartialAliasIndex(): void
+	{
+		$index = $this->tableName . '_alias';
+		try {
+			$existing = $this->connection
+				->query('SELECT sql FROM sqlite_master WHERE type = :type AND name = :name', [
+					':type' => 'index',
+					':name' => $index,
+				])
+				->fetchField();
+
+			// a partial index carries its own predicate, so finding one means the swap already ran
+			if (is_string($existing) && stripos($existing, ' WHERE ') !== false) {
+				return;
+			}
+			if (is_string($existing) && $existing !== '') {
+				$this->connection->query('DROP INDEX ' . $index);
+			}
+			$this->connection->query(
+				'CREATE INDEX IF NOT EXISTS ' .
+					$index .
+					' ON {' .
+					$this->tableName .
+					'} (alias) WHERE alias IS NOT NULL',
+			);
+		} catch (Throwable) {
+			// the full index costs rows; it does not break anything, so a failed swap is survivable
+		}
+	}
+
+	/**
 	 * A stable fingerprint of a route collection.
 	 *
 	 * Sorted by name, because a collection that differs only in iteration order produces the same
 	 * table and must not read as a change.
 	 *
-	 * SEMANTIC FIELDS, NOT `serialize($route)`, and that distinction is the whole fix. A serialized
+	 * Semantic fields, not `serialize($route)`. A serialized
 	 * Route carries its COMPILED form, and compilation happens lazily -- so the same collection
 	 * hashes differently depending on whether anything asked for a compiled route before the dump.
 	 * Measured: with the serialized form, enabling token still wrote 17,200 router rows because no
@@ -100,10 +178,6 @@ class CfwMatcherDumper extends MatcherDumper
 	{
 		$parts = [];
 		foreach ($routes->all() as $name => $route) {
-			if (!($route instanceof Route)) {
-				$parts[$name] = (string) $name;
-				continue;
-			}
 			$defaults = $route->getDefaults();
 			$requirements = $route->getRequirements();
 			$options = $route->getOptions();
