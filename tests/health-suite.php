@@ -51,6 +51,7 @@ function ok(string $label, bool $condition, string $detail = ''): void
 	}
 }
 
+use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Health\BootSelfTest;
 use Drupal\drupflare\Health\CircuitBreaker;
 use Drupal\drupflare\Health\Finding;
@@ -3941,6 +3942,81 @@ ok(
 	'while the pattern_outline index it shares the table with survives',
 	isset($schema['indexes']['pattern_outline_parts']),
 );
+// #endregion
+// #region P45 -- a capability is SHIMMED, ACCOMMODATED or DECLARED, never silently absent
+echo "\n# Degradation -- the declared-degradation contract\n";
+
+Degradation::reset();
+ok('nothing is declared on a fresh boot', Degradation::all() === []);
+ok('and a capability nobody declared reads as not declared', !Degradation::isDeclared('nope'));
+
+Degradation::record('sodium_crypto_generichash', 'no sodium and no blake2b in ext-hash');
+ok('recording a degradation registers it', Degradation::isDeclared('sodium_crypto_generichash'));
+$entry = Degradation::all()['sodium_crypto_generichash'];
+ok('it carries the reason an operator has to act on', str_contains($entry['reason'], 'ext-hash'));
+ok('it names the caller, so the gap is traceable to code', $entry['caller'] !== 'unknown');
+// blocked is the default because an unknown state must never read as a weaker claim than it is
+ok('and defaults to blocked rather than to something softer', $entry['state'] === 'blocked');
+
+// ONCE PER BOOT is the whole point: a degraded function inside a render loop would otherwise
+// write thousands of identical watchdog rows and spend the meter that binds regeneration
+Degradation::record('sodium_crypto_generichash', 'a different reason entirely');
+ok('a second record for the same capability does not add a row', count(Degradation::all()) === 1);
+ok(
+	'and does not overwrite the first reason',
+	Degradation::all()['sodium_crypto_generichash']['reason'] ===
+		'no sodium and no blake2b in ext-hash',
+);
+
+Degradation::record('cfw_probe_untested', 'nothing has proven this either way', 'untested');
+ok('a second capability IS a second row', count(Degradation::all()) === 2);
+ok(
+	'and keeps the state it was given',
+	Degradation::all()['cfw_probe_untested']['state'] === 'untested',
+);
+
+// the module table's vocabulary, deliberately, and `supported` is absent from both for the same
+// reason: it meant "measured WITHOUT the thing that needs it" and read as a promise
+Degradation::record('cfw_probe_bogus', 'an unknown state must not soften the claim', 'supported');
+ok(
+	'an unrecognised state is recorded as blocked rather than trusted',
+	Degradation::all()['cfw_probe_bogus']['state'] === 'blocked',
+);
+ok(
+	'and `supported` is not in the vocabulary at all',
+	!in_array('supported', Degradation::STATES, true),
+);
+
+$rows = Degradation::requirements();
+ok('every declaration surfaces a status-report row', count($rows) === 3);
+$keys = array_keys($rows);
+ok(
+	'keyed safely for a requirements array',
+	preg_match('/^drupflare_degraded_[a-z0-9_]+$/i', $keys[0]) === 1,
+);
+$blocked = $rows['drupflare_degraded_sodium_crypto_generichash'];
+ok('a blocked capability reports as an Error', $blocked['severity'] === RequirementSeverity::Error);
+ok(
+	'an untested one reports as a Warning, which is a weaker claim and a different colour',
+	$rows['drupflare_degraded_cfw_probe_untested']['severity'] === RequirementSeverity::Warning,
+);
+
+// (a) of the contract: recording CANNOT fatal. There is no host bridge in this suite, so
+// Host::call throws -- and a declaration that died would be worse than the gap it describes
+$survived = true;
+try {
+	Degradation::record('cfw_probe_nohost', 'the logger is unreachable from here');
+} catch (Throwable) {
+	$survived = false;
+}
+ok('a declaration survives having no host bridge to log through', $survived);
+ok(
+	'and is still recorded when the log could not be written',
+	Degradation::isDeclared('cfw_probe_nohost'),
+);
+
+Degradation::reset();
+ok('reset clears the registry for the next boot', Degradation::all() === []);
 // #endregion
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);
