@@ -7,6 +7,7 @@ namespace Drupal\drupflare\Hook;
 use Drupal\Core\Extension\Requirement\RequirementSeverity;
 use Drupal\Core\Hook\Attribute\Hook;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
+use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
 use Drupal\drupflare\StreamWrapper\CfwFileStreamWrapper;
 
@@ -105,6 +106,8 @@ final class Requirements
 			];
 		}
 
-		return $requirements;
+		// P45: anything the host could neither shim nor accommodate reports itself here rather
+		// than being silently absent. Merged last so a declaration cannot displace a fixed row
+		return $requirements + Degradation::requirements();
 	}
 }
