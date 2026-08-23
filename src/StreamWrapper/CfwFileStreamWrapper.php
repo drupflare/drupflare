@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\drupflare\StreamWrapper;
 
 use Drupal\Core\StreamWrapper\StreamWrapperInterface;
+use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
 
 /**
@@ -542,26 +543,98 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	}
 
 	/**
+	 * Largest file this will materialise into MEMFS, in bytes.
+	 *
+	 * MEMFS is the same linear memory the interpreter runs in, and the shipping build peaks about
+	 * 6.3 MiB under the isolate limit -- so materialising is spending the scarcest resource the
+	 * runtime has. 2 MiB covers the images and documents `realpath()` is actually reached for and
+	 * leaves the cap intact for the render itself.
+	 */
+	public const REALPATH_MAX_BYTES = 2097152;
+
+	/**
+	 * Where materialised bytes land.
+	 *
+	 * Under `/tmp` because emscripten's MEMFS always creates it -- the opcache abort that took a
+	 * whole deploy to find was a path that did not exist yet at module-startup time.
+	 */
+	public const MATERIALISE_DIR = '/tmp/cfw-realpath';
+
+	/**
 	 * {@inheritdoc}
 	 *
-	 * FALSE, always, and that is the honest answer. There is no path on any filesystem that holds
-	 * these bytes. Returning something plausible here is how a caller ends up passing an invented
-	 * path to a native file function and getting a confusing failure a long way from the cause.
+	 * MATERIALISES ON DEMAND, which reverses what this method used to do. Returning FALSE was
+	 * defensible -- there is genuinely no path on any filesystem holding these bytes -- but it was
+	 * a SILENT gap, and a silent gap is the one thing P45 forbids. `strata_files` captured nothing
+	 * for exactly this reason: `ManagedFileCapture` early-returns on a FALSE realpath, so a module
+	 * that looked installed and tested captured no files and nothing said so.
+	 *
+	 * So the bytes are written into MEMFS under the real files path and that path is returned.
+	 * `is_file()` and `Hash::ofStream(fopen($path))` then both work against an UNMODIFIED module,
+	 * which is the whole product claim. The lazy-FS budget evicts what it writes.
+	 *
+	 * ABOVE THE THRESHOLD IT STILL RETURNS FALSE, but DECLARES rather than staying quiet -- the
+	 * declared-degradation pattern in its first real use. The caller gets the same answer it used
+	 * to get; the difference is that an operator can now see why on the status report.
 	 *
 	 * No PHP return type, and core is the reason: `StreamWrapperInterface` tags this
 	 * `@return string` while the prose directly beneath says "or FALSE on failure or if the
 	 * registered wrapper does not provide an implementation" -- and core's own `LocalStream`
 	 * returns `getLocalPath()`, which is `string|false`. So the tag is wrong upstream. Declaring
-	 * `: false` here made that contradiction PHPStan's problem instead of core's; leaving the
-	 * signature exactly as core writes it keeps the honest value without asserting a narrower type
-	 * than the interface admits.
+	 * `: false` here made that contradiction PHPStan's problem instead of core's.
 	 *
 	 * @return string|false
-	 *   Always FALSE: these bytes have no path on any filesystem.
+	 *   A MEMFS path holding the bytes, or FALSE when they are too large or absent.
 	 */
 	public function realpath()
 	{
-		return false;
+		$uri = $this->uri;
+		if ($uri === '') {
+			return false;
+		}
+
+		$stat = $this->url_stat($uri, 0);
+		if ($stat === false) {
+			// absent is not a degradation; it is the correct answer for a file that is not there
+			return false;
+		}
+
+		$size = (int) ($stat['size'] ?? 0);
+		if ($size > self::REALPATH_MAX_BYTES) {
+			Degradation::record(
+				'CfwFileStreamWrapper::realpath',
+				sprintf(
+					'a file above %d bytes is not materialised into MEMFS, so native file functions cannot reach it; code that needs a local path will skip this file',
+					self::REALPATH_MAX_BYTES,
+				),
+			);
+			return false;
+		}
+
+		$local = self::MATERIALISE_DIR . '/' . md5($uri) . '-' . basename(self::targetOf($uri));
+		// already materialised this boot, and the same uri always maps to the same path
+		if (is_file($local) && filesize($local) === $size) {
+			return $local;
+		}
+
+		$reply = Host::call('cfwFileRead', ['uri' => $uri]);
+		if (($reply['ok'] ?? false) !== true || !array_key_exists('b64', $reply)) {
+			return false;
+		}
+		$bytes = base64_decode((string) $reply['b64'], true);
+		if ($bytes === false) {
+			return false;
+		}
+
+		if (!is_dir(self::MATERIALISE_DIR) && !@mkdir(self::MATERIALISE_DIR, 0777, true)) {
+			return false;
+		}
+		// a partial write would hand back a path to truncated bytes, which is worse than FALSE
+		if (@file_put_contents($local, $bytes) !== strlen($bytes)) {
+			@unlink($local);
+			return false;
+		}
+		return $local;
 	}
 
 	/**
