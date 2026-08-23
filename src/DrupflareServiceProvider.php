@@ -7,6 +7,7 @@ namespace Drupal\drupflare;
 use Drupal\Core\DependencyInjection\ContainerBuilder;
 use Drupal\Core\DependencyInjection\ServiceProviderInterface;
 use Drupal\drupflare\Cache\CfwCacheBackendFactory;
+use Drupal\drupflare\Http\CachedFetchHandler;
 use Drupal\drupflare\Http\FetchHandler;
 use Drupal\Core\Cache\DatabaseBackendFactory;
 use Drupal\Core\Lock\DatabaseLockBackend;
@@ -58,17 +59,17 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 		// "ReferenceError: Asyncify is not defined" the first time anything calls
 		// Drupal::httpClient().
 		//
-		// Not swapped to CfwDeferredHttp as the fallback either: returning a 202
-		// instead of a body is a real behaviour change, so a site opts into that per
-		// service (see drupflare.services.yml). Leaving core's handler in place
-		// means outbound HTTP goes through the https stream wrapper the host
-		// registers, which is the behaviour that actually works today.
-		if (!self::runtimeCanSuspend()) {
-			$this->registerResetter($container);
-			return;
-		}
-
-		$handler = new Definition(FetchHandler::class);
+		// THE FALLBACK USED TO BE "LEAVE CORE'S HANDLER IN PLACE", and the comment
+		// here called that "the behaviour that actually works today". It does not.
+		// Core's StreamHandler opens the URL through the https stream wrapper
+		// successfully and then reads $http_response_header, which only PHP's own
+		// http wrapper populates, so every Drupal::httpClient() call rejects with
+		// "An error was encountered while creating the response" -- with the body
+		// already fetched. CachedFetchHandler reads the same host capability the
+		// wrapper does and builds the response itself.
+		$handler = new Definition(
+			self::runtimeCanSuspend() ? FetchHandler::class : CachedFetchHandler::class,
+		);
 		$handler->setPublic(false);
 		$container->setDefinition('drupflare.fetch_handler', $handler);
 
