@@ -85,6 +85,7 @@ use Drupal\Core\StreamWrapper\StreamWrapperInterface;
 use Drupal\drupflare\Cache\CfwCacheBackendFactory;
 use Drupal\drupflare\DrupflareServiceProvider;
 use Drupal\drupflare\Host;
+use Drupal\drupflare\Http\CachedFetchHandler;
 use Drupal\drupflare\Http\FetchHandler;
 use Drupal\drupflare\Logger\CfwLogger;
 use Drupal\drupflare\RequestResetter;
@@ -1746,15 +1747,32 @@ ok(
 ok('the core argument is cleared', $container->getDefinition('lock')->getArguments() === []);
 ok('and the lazy flag with it', $container->getDefinition('lock')->isLazy() === false);
 
-// the fetch handler is guarded: on an ASYNCIFY=0, non-JSPI build it is a guaranteed
-// "ReferenceError: Asyncify is not defined" the first time anything calls httpClient()
+// FetchHandler is guarded: on an ASYNCIFY=0, non-JSPI build it is a guaranteed
+// "ReferenceError: Asyncify is not defined" the first time anything calls httpClient().
+// Leaving core's StreamHandler in its place was NOT the safe fallback it read as -- it opens the
+// URL through the https wrapper, cannot read $http_response_header back out of a userland
+// wrapper, and rejects every call with the body already fetched
+//
+// hasDefinition() FIRST, and it is not defensive: removing the fix leaves no
+// `drupflare.fetch_handler` at all, and `ContainerBuilder::getDefinition()` THROWS on a missing id.
+// Falsified by reverting the provider -- without this guard the suite dies on an uncaught
+// ServiceNotFoundException instead of naming which assertion moved
+$installed = $container->hasDefinition('drupflare.fetch_handler');
+ok('a handler is installed even when the runtime cannot suspend', $installed);
 ok(
-	'the fetch handler is NOT installed on a runtime that cannot suspend',
-	!$container->hasDefinition('drupflare.fetch_handler'),
+	'the SUSPENDING one is not, because it would ReferenceError on the first call',
+	$installed &&
+		$container->getDefinition('drupflare.fetch_handler')->getClass() !== FetchHandler::class,
 );
 ok(
-	'and core keeps its own handler stack arguments',
-	$container->getDefinition('http_handler_stack')->getArguments() === [],
+	'the cached handler takes its place instead of core StreamHandler',
+	$installed &&
+		$container->getDefinition('drupflare.fetch_handler')->getClass() ===
+			CachedFetchHandler::class,
+);
+ok(
+	'and the handler stack is pointed at it',
+	count($container->getDefinition('http_handler_stack')->getArguments()) === 1,
 );
 ok(
 	'the resetter is registered either way',
@@ -1784,8 +1802,10 @@ install_host(['cfwCanSuspend' => 'yes']);
 $container = core_container();
 (new DrupflareServiceProvider())->register($container);
 ok(
-	'a non-boolean flag is not read as consent to install it',
-	!$container->hasDefinition('drupflare.fetch_handler'),
+	'a non-boolean flag is not read as consent to install the suspending one',
+	$container->hasDefinition('drupflare.fetch_handler') &&
+		$container->getDefinition('drupflare.fetch_handler')->getClass() ===
+			CachedFetchHandler::class,
 );
 install_host([]);
 
@@ -2675,6 +2695,87 @@ ok(
 install_host(['cfHost' => new FetchHostSpy(new FetchReply(204))]);
 $response = (new FetchHandler())($request, [])->wait();
 ok('with no argument it takes cfHost off the bridge', $response->getStatusCode() === 204);
+install_host([]);
+// #endregion
+// #region the handler the SHIPPING build gets
+echo "\n# CachedFetchHandler, which is what a non-suspending build routes httpClient() through\n";
+
+// THE DEFECT THIS EXISTS FOR, restated as a control: core's StreamHandler reads
+// $http_response_header after opening the URL, and no userland stream wrapper can populate it.
+// PHP 8.4 replaced the magic local with a function, and that answers NULL for the same reason --
+// so on 8.5 the read fails through the supported route too
+ok('CONTROL: a userland wrapper cannot set $http_response_header', !isset($http_response_header));
+if (function_exists('http_get_last_response_headers')) {
+	ok(
+		'CONTROL: nor does its 8.4 replacement answer for one',
+		http_get_last_response_headers() === null,
+	);
+} else {
+	ok('CONTROL: the 8.4 replacement is absent on this PHP', true);
+}
+
+$cachedSpy = new HostSpy([
+	'ok' => true,
+	'status' => 200,
+	'headers' => ['content-type' => 'application/json'],
+	'body' => '{"advisories":[]}',
+]);
+install_host(['cfwFetch' => $cachedSpy]);
+$response = (new CachedFetchHandler())($request, [])->wait();
+ok('a cached response comes back as a real PSR-7 response', $response->getStatusCode() === 200);
+ok('with its headers', $response->getHeaderLine('content-type') === 'application/json');
+ok('and its body', (string) $response->getBody() === '{"advisories":[]}');
+ok('the absolute uri crosses', ($cachedSpy->calls[0]['url'] ?? '') === (string) $request->getUri());
+ok('the method crosses', ($cachedSpy->calls[0]['method'] ?? '') === 'POST');
+// the cache is keyed method + url + BODY, so two POSTs to one endpoint differing only in their
+// payload must not read each other's answer
+ok('and the body crosses', ($cachedSpy->calls[0]['body'] ?? '') === 'payload');
+
+// a refusal is a REJECTION, not a 202. Guzzle's http_errors middleware does not raise on a 2xx,
+// so a deferral dressed as success would be decoded as the payload by every caller
+install_host([
+	'cfwFetch' => new HostSpy(['ok' => false, 'error' => 'not in the fetch cache; queued']),
+]);
+$reason = rejection_of((new CachedFetchHandler())($request, []));
+ok('an uncached request rejects rather than answering 202', $reason !== '');
+ok('naming what the host said', str_contains($reason, 'queued'));
+
+// no bridge at all is the same shape: Host::call refuses rather than raising
+install_host([]);
+$reason = rejection_of((new CachedFetchHandler())($request, []));
+ok('a build with no fetch capability rejects too', str_contains($reason, 'cfwFetch'));
+
+install_host([
+	'cfwFetch' => static function (string $json): string {
+		throw new RuntimeException('the runtime refused the subrequest');
+	},
+]);
+$reason = rejection_of((new CachedFetchHandler())($request, []));
+ok(
+	'a host that raises becomes a rejection, not a fatal',
+	str_contains($reason, 'refused the subrequest'),
+);
+
+// a reply that claims ok with nothing else must not become a 200 with an invented body
+install_host(['cfwFetch' => new HostSpy(['ok' => true])]);
+$response = (new CachedFetchHandler())($request, [])->wait();
+ok('a bodiless ok reply is a 200 with an empty body', $response->getStatusCode() === 200);
+ok('and no invented headers', $response->getHeaders() === []);
+
+// header values arrive as one string per name and PSR-7 wants a list; anything structured is
+// dropped rather than cast, because "Array" as a header value is worse than a missing header
+install_host([
+	'cfwFetch' => new HostSpy([
+		'ok' => true,
+		'status' => 302,
+		'headers' => ['location' => '/next', 'x-bad' => ['a', 'b']],
+		'body' => '',
+	]),
+]);
+$response = (new CachedFetchHandler())($request, [])->wait();
+ok('a status other than 200 survives', $response->getStatusCode() === 302);
+ok('a scalar header becomes a single-element list', $response->getHeader('location') === ['/next']);
+ok('and a structured one is dropped', !$response->hasHeader('x-bad'));
 install_host([]);
 // #endregion
 // #region the image toolkit
