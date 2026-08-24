@@ -192,7 +192,8 @@ final class Degradation
 			return $where === '' ? 'unknown' : $where;
 		}
 		$class = $named['class'] ?? '';
-		$fn = ($class !== '' ? $class . '::' : '') . ($named['function'] ?? '?');
+		// no ?? on 'function': a backtrace frame always carries it, and phpstan says so
+		$fn = ($class !== '' ? $class . '::' : '') . $named['function'];
 		return $where === '' ? $fn : $fn . ' at ' . $where;
 	}
 }
