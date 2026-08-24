@@ -148,4 +148,8 @@
 		<exclude name="Squiz.WhiteSpace.FunctionSpacing.BeforeFirst" />
 	</rule>
 	<!-- #endregion -->
+
+	<rule ref="Drupal.Commenting.FunctionComment.InvalidNoReturn">
+		<exclude-pattern>stubs/*</exclude-pattern>
+	</rule>
 </ruleset>
