@@ -1,0 +1,6 @@
+drupflare.ops_terminal:
+  title: 'Operations Terminal'
+  description: 'Run the operations this runtime has, in Drush spelling.'
+  route_name: drupflare.ops_terminal
+  parent: system.admin_config_development
+  weight: 10

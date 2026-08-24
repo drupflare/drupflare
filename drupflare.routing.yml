@@ -1,0 +1,19 @@
+drupflare.ops_terminal:
+  path: '/admin/config/development/drupflare-ops'
+  defaults:
+    _form: 'Drupal\drupflare\Form\OpsTerminalForm'
+    _title: 'Operations Terminal'
+  requirements:
+    _permission: 'administer drupflare operations'
+  options:
+    _admin_route: true
+
+drupflare.oidc_complete:
+  path: '/drupflare/oidc/complete'
+  defaults:
+    _controller: 'Drupal\drupflare\Network\CfwOidc::complete'
+    _title: 'Completing sign-in'
+  requirements:
+    _access: 'TRUE'
+  options:
+    no_cache: true

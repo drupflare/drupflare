@@ -1,0 +1,4 @@
+administer drupflare operations:
+  title: 'Administer Drupflare operations'
+  description: 'Use the operations terminal, which can rebuild caches, run database updates and install modules.'
+  restrict access: true

@@ -52,6 +52,7 @@ function ok(string $label, bool $condition, string $detail = ''): void
 }
 
 use Drupal\drupflare\Degradation;
+use Drupal\drupflare\Ops\CommandLine;
 use Drupal\drupflare\Health\BootSelfTest;
 use Drupal\drupflare\Health\CircuitBreaker;
 use Drupal\drupflare\Health\Finding;
@@ -4018,5 +4019,102 @@ ok(
 Degradation::reset();
 ok('reset clears the registry for the next boot', Degradation::all() === []);
 // #endregion
+
+// #region P18: the operations terminal's parser
+$parsed = CommandLine::parse('en pathauto token');
+ok('a plain operation parses', $parsed['ok'] === true && $parsed['op'] === 'en');
+ok('and is an operation rather than a package', $parsed['kind'] === 'operation');
+ok(
+	'every drush spelling of one operation resolves to it',
+	CommandLine::parse('cache:rebuild')['op'] === 'cr' &&
+		CommandLine::parse('cache-rebuild')['op'] === 'cr' &&
+		CommandLine::parse('pm:install token')['op'] === 'en' &&
+		CommandLine::parse('core:status')['op'] === 'status',
+);
+ok(
+	'flags are separated from arguments',
+	CommandLine::parse('en token -y --quiet')['args'] === ['token'],
+);
+ok('and carries its arguments', $parsed['args'] === ['pathauto', 'token']);
+ok('and the registry decides whether it writes', $parsed['writes'] === true);
+
+$prefixed = CommandLine::parse('drush cr');
+ok('a leading drush is accepted and ignored', $prefixed['ok'] === true && $prefixed['op'] === 'cr');
+ok(
+	'a vendor-path drush is too, which is what muscle memory types',
+	CommandLine::parse('./vendor/bin/drush status')['op'] === 'status',
+);
+
+$composer = CommandLine::parse('composer require drupal/token:^1.17');
+ok('composer require parses as an install rather than a refusal', $composer['ok'] === true);
+ok('and is a package operation', $composer['kind'] === 'package' && $composer['verb'] === 'add');
+ok(
+	'with the constraint split off the name',
+	$composer['packages'] === [['name' => 'drupal/token', 'constraint' => '^1.17']],
+);
+ok(
+	'a bare npm install parses to the same intent',
+	CommandLine::parse('npm i lodash')['verb'] === 'add',
+);
+ok(
+	'bun resolves against the npm registry',
+	CommandLine::parse('bun add lodash')['manager'] === 'npm',
+);
+ok(
+	'an npm scoped name keeps its scope and splits on the LAST @',
+	CommandLine::normalisePackage('@scope/pkg@^1.2') === [
+		'name' => '@scope/pkg',
+		'constraint' => '^1.2',
+	],
+);
+ok(
+	'composer install with no package is refused, because there is no lock to restore into',
+	CommandLine::parse('composer install')['ok'] === false,
+);
+ok(
+	'a package install is sliced, since a fetch and unpack is not one invocation',
+	$composer['sliced'] === true,
+);
+foreach (['php', 'eval', 'sql', 'ssh'] as $name) {
+	ok(
+		sprintf('%s is refused as arbitrary execution rather than run', $name),
+		(CommandLine::parse($name . ' whatever')['refusal'] ?? null) === $name,
+	);
+}
+
+$unknown = CommandLine::parse('nonsense');
+ok(
+	'an unknown operation is not a refusal',
+	$unknown['ok'] === false && !isset($unknown['refusal']),
+);
+ok('and names what IS available', str_contains($unknown['error'], 'status'));
+ok('an empty line is refused rather than parsed', CommandLine::parse('   ')['ok'] === false);
+ok('a bare drush with nothing after it is too', CommandLine::parse('drush')['ok'] === false);
+
+// str_getcsv() is the usual shortcut and gets exactly this wrong: a quote inside a bare word opens
+// a field and swallows the rest of the line
+ok(
+	'a quote inside a word is literal and does not swallow the line',
+	CommandLine::words('en my"module other') === ['en', 'my"module', 'other'],
+);
+ok(
+	'a quoted argument keeps its spaces',
+	CommandLine::words('cim "my config dir" x') === ['cim', 'my config dir', 'x'],
+);
+ok(
+	'an empty quoted argument is still an argument',
+	CommandLine::words("en '' x") === ['en', '', 'x'],
+);
+
+ok(
+	'a sliced operation says it is driven in the background rather than run inline',
+	str_contains(CommandLine::plan(CommandLine::parse('cr')), 'background'),
+);
+ok(
+	'a read-only one does not claim to write',
+	!str_contains(CommandLine::plan(CommandLine::parse('status')), 'It writes.'),
+);
+// #endregion
+
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);
