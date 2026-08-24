@@ -115,3 +115,63 @@ if (!\function_exists('pw_decode')) {
 		throw new \LogicException('pw_decode stub called; the runtime is not loaded');
 	}
 }
+
+/**
+ * The argon2id helpers the HOST declares, from `src/drupal/argon2-fix.ts`.
+ *
+ * Stubbed for the same reason `vrzno_env()` is: they exist only once the Durable Object has
+ * installed the bridge and evaluated the fragment, so nothing in this repository declares them and
+ * phpstan cannot see them. The signatures are transcribed from that fragment; a change there has to
+ * change these, which is the cost of a stub and the reason core's own includes are SCANNED instead.
+ *
+ * @return bool
+ *   Always TRUE; the function only exists when the bridge is present.
+ */
+function cfw_argon2_available() {}
+
+/**
+ * Hashes into PHP's own `$argon2id$...` encoded form.
+ *
+ * @param string $password
+ *   The plaintext.
+ * @param int $m
+ *   Memory cost in KiB.
+ * @param int $t
+ *   Passes.
+ * @param int $p
+ *   Lanes.
+ *
+ * @return string|null
+ *   The encoded hash, or NULL when the host refused.
+ */
+function cfw_argon2_hash($password, $m = 19456, $t = 2, $p = 1) {}
+
+/**
+ * Verifies a plaintext against an encoded argon2id hash, in constant time.
+ *
+ * @param string $password
+ *   The plaintext.
+ * @param string $encoded
+ *   The stored hash.
+ *
+ * @return bool
+ *   Whether it matches.
+ */
+function cfw_argon2_verify($password, $encoded) {}
+
+/**
+ * Whether a stored hash was written with weaker parameters than today's.
+ *
+ * @param string $encoded
+ *   The stored hash.
+ * @param int $m
+ *   Memory cost in KiB.
+ * @param int $t
+ *   Passes.
+ * @param int $p
+ *   Lanes.
+ *
+ * @return bool
+ *   Whether it should be rehashed at the next login.
+ */
+function cfw_argon2_needs_rehash($encoded, $m = 19456, $t = 2, $p = 1) {}

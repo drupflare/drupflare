@@ -13,7 +13,9 @@ use Drupal\Core\Cache\DatabaseBackendFactory;
 use Drupal\Core\Lock\DatabaseLockBackend;
 use Drupal\Core\Lock\PersistentDatabaseLockBackend;
 use Drupal\Core\Routing\MatcherDumper;
+use Drupal\Core\Site\Settings;
 use Drupal\drupflare\Lock\CfwLockBackend;
+use Drupal\drupflare\Password\CfwPassword;
 use Drupal\drupflare\Routing\CfwMatcherDumper;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Reference;
@@ -48,6 +50,7 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 		$this->registerRouterDumper($container);
 		$this->registerCacheBackend($container);
 		$this->registerLockBackend($container);
+		$this->registerPassword($container);
 
 		if (!$container->hasDefinition('http_handler_stack')) {
 			return;
@@ -133,6 +136,41 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 			return;
 		}
 		$definition->setClass(CfwCacheBackendFactory::class);
+	}
+
+	/**
+	 * Wraps Drupal's password service so argon2id can be computed on the host.
+	 *
+	 * DECORATION RATHER THAN REPLACEMENT: core's service becomes the inner one and still owns every
+	 * bcrypt and legacy hash on the site. Without that a site that turned this on would find every
+	 * existing account unable to log in, which is a worse outcome than not having argon2id.
+	 *
+	 * OFF UNLESS THE OPERATOR SAYS OTHERWISE. Enabling it is a migration event -- every login
+	 * rehashes -- and on the free plan a 19 MiB, two-pass hash is CPU a login invocation does not
+	 * have. `drupflare.argon2` in settings is the switch, and the host mirrors it from a lever so it
+	 * can be turned back off without a redeploy.
+	 */
+	private function registerPassword(ContainerBuilder $container): void
+	{
+		if (!$container->hasDefinition('password')) {
+			return;
+		}
+
+		$inner = $container->getDefinition('password');
+		$inner->setPublic(false);
+		$container->setDefinition('drupflare.password.inner', $inner);
+
+		// PUBLIC, EXPLICITLY. `new Definition()` is private by default in Symfony, and Drupal's
+		// optimised container dumper drops a private service from the public map -- so without
+		// this, `Drupal::service('password')` throws ServiceNotFoundException and every user save
+		// fails at PasswordItem::preSave(). Measured: 45 specs across 11 files
+		$decorated = new Definition(CfwPassword::class);
+		$decorated->setPublic(true);
+		$decorated->setArguments([
+			new Reference('drupflare.password.inner'),
+			(bool) Settings::get('drupflare.argon2', false),
+		]);
+		$container->setDefinition('password', $decorated);
 	}
 
 	/**
