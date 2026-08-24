@@ -10,6 +10,8 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
 use Drupal\drupflare\StreamWrapper\CfwFileStreamWrapper;
+use Throwable;
+use XMLWriter;
 
 /**
  * Status-report entries for the Drupflare compatibility layer.
@@ -33,7 +35,14 @@ final class Requirements
 	 *
 	 * Shared with the install-time check so the two cannot disagree about what "installed" means.
 	 */
-	public const CAPABILITIES = ['cfwMail', 'cfwLog', 'cfwFetch', 'cfwImageUrl', 'cfwFileWrite'];
+	public const CAPABILITIES = [
+		'cfwMail',
+		'cfwLog',
+		'cfwFetch',
+		'cfwTcp',
+		'cfwImageUrl',
+		'cfwFileWrite',
+	];
 
 	/**
 	 * Implements hook_runtime_requirements().
@@ -109,5 +118,67 @@ final class Requirements
 		// P45: anything the host could neither shim nor accommodate reports itself here rather
 		// than being silently absent. Merged last so a declaration cannot displace a fixed row
 		return $requirements + Degradation::requirements();
+	}
+
+	/**
+	 * Clears an install-blocking `ext-xmlwriter` error when the host supplies the class instead.
+	 *
+	 * `extension_loaded()` IS A BUILT-IN, so the conditional-declaration pattern every other shim
+	 * here uses cannot bind to it -- the same wall `password_hash()` hit, and the reason argon2
+	 * needed a service decorator. A module asking `extension_loaded('xmlwriter')` therefore gets
+	 * FALSE no matter how complete the replacement is, and `simple_sitemap_requirements()` turns
+	 * that into a `RequirementSeverity::Error` that blocks installation outright.
+	 *
+	 * `hook_requirements_alter()` is the seam Drupal provides for exactly this, so the fix stays
+	 * host-side and the module is unmodified -- P45's rule. It is NARROW on purpose: it clears one
+	 * named key, and only when the class is really there and really usable, so a build without the
+	 * polyfill keeps the honest error.
+	 *
+	 * @param array $requirements
+	 *   Every requirement Drupal collected, by key.
+	 */
+	#[Hook('requirements_alter')]
+	public function requirementsAlter(array &$requirements): void
+	{
+		if (!isset($requirements['simple_sitemap_php_extensions'])) {
+			return;
+		}
+		if (extension_loaded('xmlwriter') || !self::xmlWriterUsable()) {
+			return;
+		}
+
+		$requirements['simple_sitemap_php_extensions'] = [
+			'title' => new TranslatableMarkup('Simple XML Sitemap PHP extensions'),
+			'value' => new TranslatableMarkup('Provided by Drupflare'),
+			'description' => new TranslatableMarkup(
+				'This runtime carries no ext-xmlwriter. Drupflare supplies a pure-PHP XMLWriter with the same output, verified byte for byte against libxml, so sitemap generation works; extension_loaded() still answers FALSE because it reports compiled extensions and cannot be shimmed.',
+			),
+			'severity' => RequirementSeverity::OK,
+		];
+	}
+
+	/**
+	 * Whether the replacement class is present AND produces a document.
+	 *
+	 * Checking `class_exists()` alone would pass on a stub, which is the failure this project keeps
+	 * finding: a capability that reports itself present and does nothing. One round trip is cheap
+	 * and only runs when a module actually asked.
+	 *
+	 * @return bool
+	 *   TRUE when a sitemap can really be written.
+	 */
+	private static function xmlWriterUsable(): bool
+	{
+		if (!class_exists('XMLWriter', false)) {
+			return false;
+		}
+		try {
+			$writer = new XMLWriter();
+			$writer->openMemory();
+			$writer->writeElement('loc', 'https://example.com/');
+			return $writer->outputMemory() === '<loc>https://example.com/</loc>';
+		} catch (Throwable) {
+			return false;
+		}
 	}
 }

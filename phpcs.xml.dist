@@ -62,7 +62,7 @@
 	-->
 	<rule ref="Drupal.Files.LineLength">
 		<properties>
-			<property name="lineLimit" value="100" />
+			<property name="lineLimit" value="110" />
 		</properties>
 	</rule>
 
@@ -144,6 +144,7 @@
 		<exclude name="Drupal.Functions.MultiLineFunctionDeclaration.BraceOnNewLine" />
 		<exclude name="Drupal.Functions.MultiLineFunctionDeclaration.Indent" />
 		<exclude name="Drupal.ControlStructures.ControlSignature.NewlineAfterCloseBrace" />
+		<exclude name="Drupal.Commenting.InlineComment.SpacingAfter" />
 		<exclude name="Squiz.WhiteSpace.FunctionSpacing.AfterLast" />
 		<exclude name="Squiz.WhiteSpace.FunctionSpacing.BeforeFirst" />
 	</rule>

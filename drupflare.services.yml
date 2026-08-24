@@ -11,3 +11,8 @@ services:
   drupflare.request_resetter:
     class: Drupal\drupflare\RequestResetter
     arguments: ['@service_container']
+
+  drupflare.solarium_transport:
+    class: Drupal\drupflare\Search\SolariumTransport
+    tags:
+      - { name: event_subscriber }

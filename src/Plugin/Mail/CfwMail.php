@@ -11,6 +11,7 @@ use Drupal\Core\Mail\MailInterface;
 use Drupal\Core\StringTranslation\StringTranslationTrait;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\drupflare\Host;
+use Throwable;
 
 /**
  * Hands mail to the Worker, which owns the transport.
@@ -89,6 +90,7 @@ class CfwMail implements MailInterface
 				$headers,
 				array_flip(['Cc', 'Bcc', 'In-Reply-To', 'References']),
 			),
+			'smtp' => self::smtpSettings(),
 		]);
 
 		if (($reply['ok'] ?? false) !== true) {
@@ -100,5 +102,49 @@ class CfwMail implements MailInterface
 		}
 
 		return true;
+	}
+
+	/**
+	 * The site's own `smtp.settings`, for the host to fill any gap the deployment left.
+	 *
+	 * **`drupal/smtp` INSTALLS ON THIS RUNTIME AND ITS SOCKET NEVER RUNS**, because `system.mail` is
+	 * forced to `cfw_mail`. So a site that installed it, entered its relay and saved had a complete
+	 * SMTP configuration that nothing read, and its operator had to type the same host, port and
+	 * password a second time as Worker vars. Passing it here closes that with the module unmodified.
+	 *
+	 * The host treats these as a FALLBACK and its own vars always win, which is the right way round:
+	 * a var is set by whoever can deploy the Worker, this form by anyone who can reach a Drupal
+	 * admin page.
+	 *
+	 * @return array
+	 *   The settings, or an empty array when the module is not configured here.
+	 */
+	private static function smtpSettings(): array
+	{
+		try {
+			// `getEditable` is deliberately not used: this is a read, and the config may not exist
+			// at all, which `get()` answers with nulls rather than by throwing
+			$config = Drupal::config('smtp.settings');
+			$host = (string) ($config->get('smtp_host') ?? '');
+			if ($host === '') {
+				return [];
+			}
+
+			return [
+				'smtp_on' => (bool) ($config->get('smtp_on') ?? false),
+				'smtp_host' => $host,
+				'smtp_port' => (string) ($config->get('smtp_port') ?? ''),
+				'smtp_protocol' => (string) ($config->get('smtp_protocol') ?? ''),
+				'smtp_username' => (string) ($config->get('smtp_username') ?? ''),
+				'smtp_password' => (string) ($config->get('smtp_password') ?? ''),
+				'smtp_from' => (string) ($config->get('smtp_from') ?? ''),
+			];
+		} catch (Throwable) {
+			// A CONFIG READ MUST NEVER BE WHAT BREAKS SENDING. This is a fallback for a setting the
+			// deployment probably supplied anyway, and `config.factory` is absent early in boot and
+			// in a partial container -- so a throw here would turn "no smtp module" into a fatal in
+			// the middle of whatever content operation triggered the mail.
+			return [];
+		}
 	}
 }
