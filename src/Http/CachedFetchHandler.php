@@ -43,12 +43,19 @@ use Throwable;
  * `Json::decode()` it and iterate four scalars. A refusal is what a caller's existing error path is
  * already written for, and it is what core's own handler raises when a socket cannot be opened.
  *
- * WHAT IS NOT CARRIED: request headers. `cfwFetch` keys the cache on method + URL + body and the
- * queue table has no header column, so a request's own headers reach neither the cache lookup nor
- * the eventual `fetch()`. Every deferred path here has always had that gap -- the stream wrapper
- * collects headers and the host ignores them -- and it is declared rather than silently absent: an
- * API client sending `Authorization` gets an unauthenticated 401 back as a real response, not a
- * silent success.
+ * REQUEST HEADERS ARE CARRIED, since 2026-08-23. They used to reach neither the cache key nor the
+ * eventual `fetch()`, so an API client sending `Authorization` got an unauthenticated 401 back as a
+ * real response. `cfwFetch` now keys on method + URL + body + headers and the queue carries them.
+ *
+ * The key includes them because omitting them is a DISCLOSURE, not a saving: two callers asking one
+ * URL with different credentials would otherwise share a row, and the second would be served the
+ * first one's authenticated response.
+ *
+ * TWO SETS, and the wire set is the larger one. `Host`, `Content-Length`, `Connection`,
+ * `Transfer-Encoding`, `Keep-Alive` and `Upgrade` reach neither, because `fetch()` computes them.
+ * `User-Agent` is SENT but not keyed, which is what keeps the sentence below true: Guzzle's
+ * StreamHandler puts its own `User-Agent` in the stream context and a bare `file_get_contents()`
+ * sends none, so keying on it would split one URL into a row per client library.
  *
  * @see CfwDeferredHttp for the 202 form, which a site opts into per service
  * @see FetchHandler for the JSPI form, which suspends and needs no cache
@@ -78,6 +85,7 @@ final class CachedFetchHandler
 			$reply = HttpsStreamWrapper::hostFetch()([
 				'url' => $url,
 				'method' => $method,
+				'headers' => self::flatten($request->getHeaders()),
 				'body' => (string) $request->getBody(),
 			]);
 		} catch (Throwable $e) {
@@ -126,6 +134,24 @@ final class CachedFetchHandler
 				continue;
 			}
 			$out[(string) $name] = [(string) $value];
+		}
+		return $out;
+	}
+
+	/**
+	 * And the other direction: Guzzle gives a list per name, the host takes one string.
+	 *
+	 * @param array $headers
+	 *   What getHeaders() returned.
+	 *
+	 * @return array
+	 *   Header name to a single comma-joined value, which is how HTTP folds a repeat anyway.
+	 */
+	private static function flatten(array $headers): array
+	{
+		$out = [];
+		foreach ($headers as $name => $values) {
+			$out[(string) $name] = is_array($values) ? implode(', ', $values) : (string) $values;
 		}
 		return $out;
 	}

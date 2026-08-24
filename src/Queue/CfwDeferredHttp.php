@@ -59,9 +59,13 @@ class CfwDeferredHttp
 		// 1. cached, if a previous fetch left a body behind.
 		$deferredBody = (string) $request->getBody();
 		if (in_array($method, self::CACHEABLE, true) || Host::has('cfwQueueFetch')) {
+			// THE SAME HEADERS THE QUEUE STEP SENDS, or this can never hit: the host keys the cache
+			// on method + url + body + headers, so a lookup omitting them names a different entry
+			// than the one step 3 queued and every request re-queues forever
 			$cached = Host::call('cfwHttpCacheGet', [
 				'url' => $url,
 				'method' => $method,
+				'headers' => self::flatten($request->getHeaders()),
 				'body' => $deferredBody,
 			]);
 			if (($cached['ok'] ?? false) === true && isset($cached['body'])) {
