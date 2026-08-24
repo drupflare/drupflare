@@ -35,6 +35,7 @@ if (!function_exists('vrzno_env')) {
 }
 
 use Drupal\drupflare\Degradation;
+use Drupal\drupflare\Network\CfwOidc;
 use Drupal\drupflare\Network\CfwTcp;
 
 spl_autoload_register(function (string $class) use ($root): void {
@@ -205,6 +206,46 @@ ok(
 
 [$seen] = script_host(['ok' => false, 'error' => 'syslog is not configured; set SYSLOG_URL']);
 ok('a refused record reports false', CfwTcp::syslog('x') === false);
+// #endregion
+
+// #region CfwOidc -- the two pure decisions the controller makes
+echo "\n# CfwOidc -- authmap scoping and the account name\n";
+
+ok(
+	'the authmap key is scoped by ISSUER, not by subject alone',
+	CfwOidc::authname('user-42', 'https://idp.test') === 'https://idp.test|user-42',
+);
+ok(
+	'a trailing slash on the issuer does not make a second identity',
+	CfwOidc::authname('user-42', 'https://idp.test/') ===
+		CfwOidc::authname('user-42', 'https://idp.test'),
+);
+// without issuer scoping a subject from a newly-configured provider could take over an existing
+// account that happened to share the identifier
+ok(
+	'the same subject at two issuers is two identities',
+	CfwOidc::authname('user-42', 'https://a.test') !==
+		CfwOidc::authname('user-42', 'https://b.test'),
+);
+
+ok('a name claim is preferred', CfwOidc::accountName(['name' => 'Someone']) === 'Someone');
+ok(
+	'preferred_username is the next fallback',
+	CfwOidc::accountName(['preferred_username' => 'someone']) === 'someone',
+);
+ok(
+	'email is the last fallback',
+	CfwOidc::accountName(['email' => 'someone@example.com']) === 'someone@example.com',
+);
+ok(
+	'a whitespace-only claim is not a name',
+	CfwOidc::accountName(['name' => '   ', 'email' => 'someone@example.com']) ===
+		'someone@example.com',
+);
+ok(
+	'no usable claim yields an empty string, so externalauth generates one',
+	CfwOidc::accountName([]) === '',
+);
 // #endregion
 
 echo "\n$pass passed, $fail failed\n";
