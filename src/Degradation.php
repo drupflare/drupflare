@@ -10,7 +10,7 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
 /**
  * A capability that is degraded, recorded so it can never be SILENTLY degraded.
  *
- * P45's rule, and it is a product position rather than a coding style: an unmodified module is the
+ * A product position rather than a coding style: an unmodified module is the
  * whole claim, so every gap is the host's to close or to DECLARE. A capability is therefore in
  * exactly one of three states -- shimmed, accommodated, or declared -- and "quietly does nothing"
  * is not one of them.

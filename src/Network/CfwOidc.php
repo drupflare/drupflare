@@ -85,7 +85,7 @@ final class CfwOidc extends ControllerBase
 	/**
 	 * Hands the verified claims to `externalauth`, which owns the account mapping.
 	 *
-	 * Declared rather than reimplemented, per P45: this module does NOT create users itself. If
+	 * Declared rather than reimplemented: this module does NOT create users itself. If
 	 * `externalauth` is absent the login is refused and the gap is reported on the status page,
 	 * because inventing an account-provisioning path here would be a second, untested one.
 	 *

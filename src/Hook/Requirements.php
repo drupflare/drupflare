@@ -115,7 +115,7 @@ final class Requirements
 			];
 		}
 
-		// P45: anything the host could neither shim nor accommodate reports itself here rather
+		// anything the host could neither shim nor accommodate reports itself here rather
 		// than being silently absent. Merged last so a declaration cannot displace a fixed row
 		return $requirements + Degradation::requirements();
 	}
@@ -130,7 +130,7 @@ final class Requirements
 	 * that into a `RequirementSeverity::Error` that blocks installation outright.
 	 *
 	 * `hook_requirements_alter()` is the seam Drupal provides for exactly this, so the fix stays
-	 * host-side and the module is unmodified -- P45's rule. It is NARROW on purpose: it clears one
+	 * host-side and the module is unmodified. It is narrow: it clears one
 	 * named key, and only when the class is really there and really usable, so a build without the
 	 * polyfill keeps the honest error.
 	 *
