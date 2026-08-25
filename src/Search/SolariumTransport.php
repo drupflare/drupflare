@@ -30,8 +30,8 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
  * `@file_get_contents()`. That reaches the registered https wrapper and the BODY comes back
  * correctly. Solarium then reads `$http_response_header`, which no userland stream wrapper can
  * populate, so it gets `[]` and `Response::setHeaders()` throws `No HTTP status found`. That is the
- * P39 defect in a second consumer, and it is why the interception has to happen above the adapter
- * rather than inside it.
+ * same wall Guzzle hit, and it is why the interception has to happen above the adapter rather than
+ * inside it.
  *
  * THE FIRST QUERY CANNOT HAVE ITS ANSWER, and that is a property of the runtime rather than of this
  * class. PHP cannot await, so the capability is cached-or-deferred: a miss queues the request and
@@ -77,6 +77,12 @@ final class SolariumTransport implements EventSubscriberInterface
 	public function onPreExecuteRequest(PreExecuteRequest $event): void
 	{
 		if (!Host::has('cfwFetch')) {
+			// declining silently hands the request back to Solarium's own adapter, which on this
+			// runtime dies as an uncatchable `Asyncify is not defined` and takes the invocation
+			Degradation::record(
+				'solarium.transport',
+				'the host fetch capability is absent, so Solr traffic cannot be intercepted; Solarium own adapter cannot run here.',
+			);
 			return;
 		}
 

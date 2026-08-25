@@ -10,6 +10,7 @@ use Drupal\Core\Mail\MailFormatHelper;
 use Drupal\Core\Mail\MailInterface;
 use Drupal\Core\StringTranslation\StringTranslationTrait;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
+use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
 use Throwable;
 
@@ -140,10 +141,16 @@ class CfwMail implements MailInterface
 				'smtp_from' => (string) ($config->get('smtp_from') ?? ''),
 			];
 		} catch (Throwable) {
-			// A CONFIG READ MUST NEVER BE WHAT BREAKS SENDING. This is a fallback for a setting the
-			// deployment probably supplied anyway, and `config.factory` is absent early in boot and
-			// in a partial container -- so a throw here would turn "no smtp module" into a fatal in
-			// the middle of whatever content operation triggered the mail.
+			// A CONFIG READ MUST NEVER BE WHAT BREAKS SENDING. `config.factory` is absent early in
+			// boot and in a partial container, so a throw here would turn "no smtp module" into a
+			// fatal in the middle of whatever content operation triggered the mail.
+			//
+			// declared because the outcome is the WRONG transport rather than none: a site that
+			// configured a relay sends through the deployment default and reports success
+			Degradation::record(
+				'mail.smtp_settings',
+				'smtp.settings could not be read, so the deployment transport is used instead of the relay this site configured.',
+			);
 			return [];
 		}
 	}

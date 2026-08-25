@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\drupflare\ImageToolkit;
 
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
 use Drupal\Core\ImageToolkit\ImageToolkitBase;
 use Drupal\Core\ImageToolkit\Attribute\ImageToolkit;
@@ -71,6 +72,11 @@ class CfwImageToolkit extends ImageToolkitBase
 		// getimagesize() reads only the header, so this is cheap and gd-free
 		$info = @getimagesize($path);
 		if ($info === false) {
+			// every image style silently produces nothing from here, so the failure has to say so
+			Degradation::record(
+				'image.dimensions',
+				'getimagesize() could not read this file header, so no image style can be built from it.',
+			);
 			return false;
 		}
 		$this->width = (int) $info[0];
@@ -91,6 +97,13 @@ class CfwImageToolkit extends ImageToolkitBase
 		if ($destination === $this->getSource()) {
 			return true;
 		}
+		// declared because the bytes at $destination are the FULL-SIZE original: a module that
+		// reads a derivative's pixels gets the source, and a flush reports success either way
+		Degradation::record(
+			'image.derivatives',
+			'image styles are applied at delivery rather than written to disk, so a saved derivative is a copy of the original.',
+			'untested',
+		);
 		return @copy($this->getSource(), $destination);
 	}
 

@@ -57,6 +57,9 @@ final class CfwLockBackend implements LockBackendInterface
 	{
 		// no second thread can hold it, so the only question is whether this one already does,
 		// and the answer does not change what is returned
+		//
+		// NOT declared, and that was tried: granting is the CORRECT answer on a single-threaded
+		// object, so a declaration here fires on every boot and is a warning nobody can act on
 		$this->locks[$name] = true;
 		return true;
 	}
