@@ -24,6 +24,15 @@ final class ShimRegistry
 	const REFUSE = 'refuse';
 
 	/**
+	 * Works as the manual describes it, with no shim in the way.
+	 *
+	 * Listed rather than omitted because absence answers nothing, and the entries here are the ones
+	 * a reader would otherwise assume are gone: `getimagesize()` reads headers in ext/standard and
+	 * survives gd's absence, which this table asserted the opposite of.
+	 */
+	const NATIVE = 'native';
+
+	/**
 	 * The table.
 	 *
 	 * @return array
@@ -128,17 +137,25 @@ final class ShimRegistry
 				'alternative' => 'a key minted outside the Worker and read from a secret binding',
 			],
 			'openssl_sign' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
 				'why' =>
-					'Asymmetric signing needs a private key handle; only HMAC is reachable through crypto.subtle here.',
-				'alternative' => 'hash_hmac() for a shared-secret signature',
+					'createSign() is synchronous in workerd, so a 2048-bit RS256 signature returns in-line; crypto.subtle being async was never the constraint.',
+				'alternative' => '',
+			],
+			'openssl_verify' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' =>
+					'createVerify(), same seam as openssl_sign(); the 1/0/-1 tri-state is preserved, and -1 means the call failed rather than the signature being wrong.',
+				'alternative' => '',
 			],
 			'openssl_private_encrypt' => [
 				'verdict' => self::REFUSE,
 				'via' => '',
-				'why' => 'Same missing private key as openssl_sign().',
-				'alternative' => 'hash_hmac() for a shared-secret signature',
+				'why' =>
+					'Only signing and verification are bridged; raw private-key encryption has no caller and an unused surface is worse than an absent one.',
+				'alternative' => 'openssl_sign() when the goal is authenticity rather than secrecy',
 			],
 			'imagecreatetruecolor' => [
 				'verdict' => self::REFUSE,
@@ -166,11 +183,11 @@ final class ShimRegistry
 				'alternative' => 'CfwImageToolkit, which rewrites the URL and lets the edge resize',
 			],
 			'getimagesize' => [
-				'verdict' => self::REFUSE,
+				'verdict' => self::NATIVE,
 				'via' => '',
 				'why' =>
-					'Reads image headers through gd/libjpeg, neither of which is linked in, so a size cannot be measured locally.',
-				'alternative' => 'CfwImageToolkit, which asks the edge for the dimensions',
+					'Parses image headers in ext/standard and never went through gd or libjpeg, so it works here; CfwImageToolkit reads its dimensions from it.',
+				'alternative' => '',
 			],
 			'exec' => [
 				'verdict' => self::REFUSE,
@@ -409,5 +426,34 @@ final class ShimRegistry
 		}
 		sort($out);
 		return $out;
+	}
+
+	/**
+	 * Every name that works untouched.
+	 *
+	 * @return string[]
+	 *   Sorted, so a diff of this list is readable.
+	 */
+	public static function native(): array
+	{
+		$out = [];
+		foreach (self::functions() as $name => $entry) {
+			if ($entry['verdict'] === self::NATIVE) {
+				$out[] = $name;
+			}
+		}
+		sort($out);
+		return $out;
+	}
+
+	/**
+	 * Every verdict a caller may see.
+	 *
+	 * @return string[]
+	 *   In the order a reader should think about them: works, works through us, does not work.
+	 */
+	public static function verdicts(): array
+	{
+		return [self::NATIVE, self::ROUTE, self::REFUSE];
 	}
 }

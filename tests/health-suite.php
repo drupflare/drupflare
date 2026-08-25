@@ -506,15 +506,15 @@ ok(
 	) === count(ShimRegistry::functions()),
 );
 ok(
-	'every verdict is one of exactly two values',
+	'every verdict is one of the three declared values',
 	count(
 		array_filter(
 			ShimRegistry::functions(),
-			static fn($e) => $e['verdict'] === ShimRegistry::ROUTE ||
-				$e['verdict'] === ShimRegistry::REFUSE,
+			static fn($e) => in_array($e['verdict'], ShimRegistry::verdicts(), true),
 		),
 	) === count(ShimRegistry::functions()),
 );
+ok('there are exactly three verdicts', count(ShimRegistry::verdicts()) === 3);
 ok(
 	'every why is a real sentence rather than a placeholder',
 	count(
@@ -554,9 +554,8 @@ foreach (
 		'openssl_pkey_new' => 'keypair generation',
 		'openssl_pkey_export' => 'keypair export',
 		'openssl_csr_new' => 'CSR generation',
-		'openssl_sign' => 'asymmetric signing',
+		'openssl_private_encrypt' => 'raw private-key encryption',
 		'imagecreatetruecolor' => 'gd',
-		'getimagesize' => 'gd header reads',
 		'exec' => 'exec',
 		'shell_exec' => 'shell_exec',
 		'proc_open' => 'proc_open',
@@ -572,6 +571,24 @@ ok(
 	'a gd refusal points at CfwImageToolkit rather than just failing',
 	str_contains(ShimRegistry::alternative('imagecreatetruecolor'), 'CfwImageToolkit'),
 );
+
+// gd's absence does NOT take ext/standard's header reader with it, and this table said it did.
+// `CfwImageToolkit` reads every dimension through getimagesize(), so the wrong entry described the
+// toolkit's own dependency as unavailable
+ok('getimagesize is NOT refused', !ShimRegistry::isRefused('getimagesize'));
+ok('getimagesize is native', ShimRegistry::verdict('getimagesize') === ShimRegistry::NATIVE);
+ok('getimagesize exists on this build', function_exists('getimagesize'));
+ok(
+	'the getimagesize reason names ext/standard rather than gd',
+	str_contains(ShimRegistry::reason('getimagesize'), 'ext/standard'),
+);
+
+// openssl_sign/verify are bridged over node:crypto, which is synchronous in workerd. The table
+// refused them on "crypto.subtle is async", which was never the mechanism
+foreach (['openssl_sign', 'openssl_verify'] as $fn) {
+	ok("$fn is routed rather than refused", !ShimRegistry::isRefused($fn));
+	ok("$fn names node:crypto as its route", ShimRegistry::via($fn) === 'node:crypto');
+}
 ok(
 	'an exec refusal points at OpsRegistry, which is why Drush is not shipped',
 	str_contains(ShimRegistry::alternative('exec'), 'OpsRegistry'),
@@ -608,9 +625,16 @@ ok(
 	!throws(static fn() => ShimRegistry::assertRouted('curl_init')),
 );
 ok(
-	'routed() and refused() partition the table with nothing left over',
-	count(ShimRegistry::routed()) + count(ShimRegistry::refused()) ===
+	'the three lists partition the table with nothing left over',
+	count(ShimRegistry::routed()) +
+		count(ShimRegistry::refused()) +
+		count(ShimRegistry::native()) ===
 		count(ShimRegistry::functions()),
+);
+ok('the native list is not empty, which would defeat the point', ShimRegistry::native() !== []);
+ok(
+	'assertRouted() passes a native name, because nothing is in the way',
+	!throws(static fn() => ShimRegistry::assertRouted('getimagesize')),
 );
 ok(
 	'the refused list is not empty, which would defeat the point',
@@ -4018,6 +4042,37 @@ ok(
 
 Degradation::reset();
 ok('reset clears the registry for the next boot', Degradation::all() === []);
+
+// A CALL SITE THAT TRANSPOSES ITS ARGUMENTS IS INVISIBLE, and two shipped ones did. `record()` takes
+// (capability, reason, state), so passing a state second destroys the reason while the unrecognised
+// third argument falls back to `blocked` and the row still looks right. Checked over the SOURCE
+// because each site needs a live Drupal to reach.
+$callSites = 0;
+$transposed = [];
+$srcRoot = dirname(__DIR__) . '/src';
+$phpFiles = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($srcRoot));
+foreach ($phpFiles as $file) {
+	if (!$file->isFile() || $file->getExtension() !== 'php') {
+		continue;
+	}
+	$body = (string) file_get_contents($file->getPathname());
+	if (!preg_match_all('/Degradation::record\(\s*(.+?)\);/s', $body, $matches)) {
+		continue;
+	}
+	foreach ($matches[1] as $args) {
+		$callSites++;
+		$parts = array_map('trim', explode(',', $args));
+		$second = trim($parts[1] ?? '', "'\" \n\t");
+		if (in_array($second, Degradation::STATES, true)) {
+			$transposed[] = $file->getFilename() . ': ' . $second;
+		}
+	}
+}
+ok('every declaration in src/ was found by the scan', $callSites >= 8);
+ok(
+	'and none passes a state where the reason belongs: ' . implode(', ', $transposed),
+	$transposed === [],
+);
 // #endregion
 
 // #region P18: the operations terminal's parser
