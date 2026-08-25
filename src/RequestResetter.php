@@ -256,7 +256,15 @@ final class RequestResetter
 					: '';
 			$manager->resetActiveTheme();
 			return $previous === '' ? true : $previous;
-		} catch (Throwable) {
+		} catch (Throwable $e) {
+			// the reset log this used to write into has no reader anywhere, so a failed step was
+			// recorded and then discarded. The consequence is in this method's own docblock: a
+			// theme pinned by one request renders every request after it
+			Degradation::record(
+				'request reset theme',
+				'the active theme could not be reset between requests, so a theme negotiated for one visitor can render for the next: ' .
+					$e->getMessage(),
+			);
 			return false;
 		}
 	}
@@ -466,7 +474,12 @@ final class RequestResetter
 			$empty = [];
 			ViewsPage::setPageRenderArray($empty);
 			return true;
-		} catch (Throwable) {
+		} catch (Throwable $e) {
+			Degradation::record(
+				'request reset views',
+				'a Views page render array survived into the next request, so one visitor can be served a view built for another: ' .
+					$e->getMessage(),
+			);
 			return false;
 		}
 	}
@@ -545,7 +558,12 @@ final class RequestResetter
 			$property = new ReflectionProperty(FormState::class, 'anyErrors');
 			$property->setValue(null, false);
 			return true;
-		} catch (Throwable) {
+		} catch (Throwable $e) {
+			Degradation::record(
+				'request reset form errors',
+				'the static form-error flag could not be cleared, so a form that failed validation for one visitor reports errors for the next: ' .
+					$e->getMessage(),
+			);
 			return false;
 		}
 	}
@@ -589,6 +607,13 @@ final class RequestResetter
 			$out['after'] = (int) $proxy->id();
 		} catch (Throwable $e) {
 			$out['error'] = substr($e->getMessage(), 0, 120);
+			// the highest-severity one in this class: an unrestored currentUser is the uid-1
+			// poisoning, where admin HTML was stored in the anonymous page cache
+			Degradation::record(
+				'request reset identity',
+				'the acting user could not be returned to anonymous between requests, so one visitor can be rendered as another: ' .
+					$e->getMessage(),
+			);
 		}
 		return $out;
 	}
