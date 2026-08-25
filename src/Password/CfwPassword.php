@@ -69,7 +69,6 @@ final class CfwPassword implements PasswordInterface
 			// behaviour and is also exactly the kind of downgrade nobody notices.
 			Degradation::record(
 				'argon2id hashing',
-				'blocked',
 				'the host refused the hash; this password was stored with the fallback algorithm',
 			);
 			return $this->fallback->hash($password);
@@ -91,7 +90,6 @@ final class CfwPassword implements PasswordInterface
 			// alternative is treating an unverifiable hash as a match
 			Degradation::record(
 				'argon2id verification',
-				'blocked',
 				'a stored argon2id hash cannot be verified because the host bridge is absent',
 			);
 			return false;
