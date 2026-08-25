@@ -112,7 +112,19 @@ final class CfwTcp
 		}
 
 		$reply = Host::call('cfwTcp', ['protocol' => 'syslog', 'record' => $record]);
-		return ($reply['ok'] ?? false) === true;
+		if (($reply['ok'] ?? false) !== true) {
+			// syslog never replies, so a dropped record is the one failure with no other symptom:
+			// the collector simply has fewer lines than the site sent, and nobody counts
+			Degradation::record(
+				'syslog relay',
+				sprintf(
+					'a syslog record was refused by the host: %s. Records sent while this is true are dropped, and syslog is one-way so nothing else reports it.',
+					(string) ($reply['error'] ?? 'no reason given'),
+				),
+			);
+			return false;
+		}
+		return true;
 	}
 
 	/**

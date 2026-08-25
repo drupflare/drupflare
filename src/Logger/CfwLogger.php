@@ -6,6 +6,7 @@ namespace Drupal\drupflare\Logger;
 
 use Drupal\Core\Logger\LogMessageParserInterface;
 use Drupal\Core\Logger\RfcLoggerTrait;
+use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
 use Psr\Log\LoggerInterface;
 use Stringable;
@@ -49,6 +50,12 @@ class CfwLogger implements LoggerInterface
 	{
 		$emit = Host::fn('cfwLog');
 		if ($emit === null) {
+			// every line is dropped from here, including the ones that would report a failure, so
+			// this is the one degradation that can hide all the others
+			Degradation::record(
+				'log.sink',
+				'the host log capability is absent, so log lines are discarded rather than emitted.',
+			);
 			return;
 		}
 
@@ -78,12 +85,23 @@ class CfwLogger implements LoggerInterface
 
 		$json = json_encode($payload);
 		if (!is_string($json)) {
+			// one invalid UTF-8 byte anywhere in the message, exception text or trace drops the
+			// whole line, and a lost log line has no other symptom
+			Degradation::record(
+				'log sink',
+				'a log line could not be encoded as JSON, usually one invalid UTF-8 byte in a message or a stack trace, and was dropped rather than delivered',
+			);
 			return;
 		}
 		try {
 			$emit($json);
-		} catch (Throwable) {
-			// a logger that throws turns a warning into an outage; swallow deliberately
+		} catch (Throwable $e) {
+			// a logger that throws turns a warning into an outage; swallow deliberately, but say so
+			// once -- a sink that is present and failing hides every degradation behind it
+			Degradation::record(
+				'log sink',
+				'the host log sink threw while accepting a line: ' . $e->getMessage(),
+			);
 		}
 	}
 

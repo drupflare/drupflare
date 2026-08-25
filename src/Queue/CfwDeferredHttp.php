@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\drupflare\Queue;
 
+use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
 use GuzzleHttp\Promise\FulfilledPromise;
 use GuzzleHttp\Promise\PromiseInterface;
@@ -107,6 +108,18 @@ class CfwDeferredHttp
 		]);
 
 		$ok = ($queued['ok'] ?? false) === true;
+		if (!$ok) {
+			// the 503 below tells the CALLER, and the caller is Drupal's update checker or a module
+			// that swallows it. A queue that is permanently refusing looks to the site owner like
+			// features that intermittently do nothing
+			Degradation::record(
+				'deferred http queue',
+				sprintf(
+					'an outbound request could not be queued: %s. Anything using Drupal::httpClient() fails while this is true.',
+					(string) ($queued['error'] ?? 'no reason given'),
+				),
+			);
+		}
 		return new FulfilledPromise(
 			new Response(
 				$ok ? 202 : 503,
