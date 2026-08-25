@@ -307,7 +307,15 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	 */
 	public function stream_close(): void
 	{
-		$this->stream_flush();
+		// fclose() has no way to report a failed flush, so a refused write was lost here with the
+		// file_managed row already committed -- an entity pointing at nothing, which is the exact
+		// failure this class exists to prevent
+		if (!$this->stream_flush()) {
+			Degradation::record(
+				'CfwFileStreamWrapper::stream_close',
+				'a buffered write could not be committed to durable storage when the stream closed, so those bytes are lost while any entity referencing them was still saved',
+			);
+		}
 		$this->buffer = '';
 		$this->position = 0;
 		$this->dirty = false;
@@ -380,11 +388,24 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 		$prefix = rtrim($path, '/') . '/';
 		$listing = Host::call('cfwFileList', ['prefix' => $prefix]);
 		$files = is_array($listing['files'] ?? null) ? $listing['files'] : [];
+		$failed = 0;
 		foreach ($files as $file) {
 			$uri = is_array($file) ? (string) ($file['uri'] ?? '') : '';
 			if ($uri !== '') {
-				Host::call('cfwFileDelete', ['uri' => $uri]);
+				$reply = Host::call('cfwFileDelete', ['uri' => $uri]);
+				if (($reply['ok'] ?? false) !== true) {
+					$failed++;
+				}
 			}
+		}
+		if ($failed > 0) {
+			Degradation::record(
+				'CfwFileStreamWrapper::rmdir',
+				sprintf(
+					'%d file(s) under a removed directory could not be deleted, so the directory reports gone while its contents are still stored and still billed',
+					$failed,
+				),
+			);
 		}
 		return true;
 	}
@@ -565,8 +586,8 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	 *
 	 * MATERIALISES ON DEMAND, which reverses what this method used to do. Returning FALSE was
 	 * defensible -- there is genuinely no path on any filesystem holding these bytes -- but it was
-	 * a SILENT gap, and a silent gap is the one thing P45 forbids. `strata_files` captured nothing
-	 * for exactly this reason: `ManagedFileCapture` early-returns on a FALSE realpath, so a module
+	 * a SILENT gap, which is the one outcome a compatibility layer may not produce. `strata_files`
+	 * captured nothing for the same reason: `ManagedFileCapture` early-returns on a FALSE realpath, so a module
 	 * that looked installed and tested captured no files and nothing said so.
 	 *
 	 * So the bytes are written into MEMFS under the real files path and that path is returned.
@@ -617,22 +638,37 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 			return $local;
 		}
 
+		// each arm below is the SAME observable outcome as the size refusal above -- a module that
+		// needs a local path skips the file -- and only that one used to say so
+		$give = static function (string $why): bool {
+			Degradation::record('CfwFileStreamWrapper::realpath', $why);
+			return false;
+		};
+
 		$reply = Host::call('cfwFileRead', ['uri' => $uri]);
 		if (($reply['ok'] ?? false) !== true || !array_key_exists('b64', $reply)) {
-			return false;
+			return $give(
+				'a stored file could not be read back, so it cannot be materialised for code that needs a local path',
+			);
 		}
 		$bytes = base64_decode((string) $reply['b64'], true);
 		if ($bytes === false) {
-			return false;
+			return $give(
+				'a stored file came back as base64 that will not decode, which means the stored bytes are damaged',
+			);
 		}
 
 		if (!is_dir(self::MATERIALISE_DIR) && !@mkdir(self::MATERIALISE_DIR, 0777, true)) {
-			return false;
+			return $give(
+				'the in-memory staging directory could not be created, so no file can be materialised at all',
+			);
 		}
 		// a partial write would hand back a path to truncated bytes, which is worse than FALSE
 		if (@file_put_contents($local, $bytes) !== strlen($bytes)) {
 			@unlink($local);
-			return false;
+			return $give(
+				'a file was materialised only partly and was discarded rather than handed over truncated; the isolate is probably out of memory',
+			);
 		}
 		return $local;
 	}
