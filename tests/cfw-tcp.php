@@ -38,6 +38,19 @@ use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Network\CfwOidc;
 use Drupal\drupflare\Network\CfwTcp;
 
+// `CfwOidc` extends `ControllerBase`, so loading it needs drupal/core on the path. This repo's own
+// vendor/ has it after a composer install; the worker's gate checks the sibling out WITHOUT one and
+// keeps a full tree beside it instead, which is why there are two candidates.
+foreach (
+	[$root . '/vendor/autoload.php', $root . '/../../drupal-src/vendor/autoload.php']
+	as $candidate
+) {
+	if (is_file($candidate)) {
+		require_once $candidate;
+		break;
+	}
+}
+
 spl_autoload_register(function (string $class) use ($root): void {
 	$prefix = 'Drupal\\drupflare\\';
 	if (!str_starts_with($class, $prefix)) {
