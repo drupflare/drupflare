@@ -115,6 +115,33 @@ final class Requirements
 			];
 		}
 
+		// gd is not compiled in, so `cfw_images` is the only toolkit a site can have. A missing
+		// one is silent otherwise: every derivative fails and nothing on the status page says so
+		$toolkits = [];
+		try {
+			$toolkits = array_keys(
+				\Drupal::service('image.toolkit.manager')->getAvailableToolkits(),
+			);
+		} catch (Throwable $e) {
+			$toolkits = [];
+		}
+		$requirements['drupflare_image_toolkit'] = [
+			'title' => new TranslatableMarkup('Drupflare image toolkit'),
+			'value' =>
+				$toolkits === []
+					? new TranslatableMarkup('None available')
+					: new TranslatableMarkup('Available: @ids', [
+						'@ids' => implode(', ', $toolkits),
+					]),
+			'description' =>
+				$toolkits === []
+					? new TranslatableMarkup(
+						'No image toolkit is available, so every image style silently produces nothing. This build has no gd, so cfw_images is the only toolkit that can serve; check that the Drupflare module is enabled and that the host exposes cfwImageUrl.',
+					)
+					: null,
+			'severity' => $toolkits === [] ? RequirementSeverity::Error : RequirementSeverity::OK,
+		];
+
 		// anything the host could neither shim nor accommodate reports itself here rather
 		// than being silently absent. Merged last so a declaration cannot displace a fixed row
 		return $requirements + Degradation::requirements();

@@ -9,7 +9,7 @@
  * CfwImageToolkit was lint-clean for a
  * day with a guaranteed fatal in it:
  *
- *   Fatal error: Class Drupal\drupflare\ImageToolkit\CfwImageToolkit contains 2
+ *   Fatal error: Class Drupal\drupflare\Plugin\ImageToolkit\CfwImageToolkit contains 2
  *   abstract methods and must therefore be declared abstract or implement the
  *   remaining methods (PluginFormInterface::buildConfigurationForm,
  *   ::submitConfigurationForm)
@@ -46,7 +46,7 @@ use Drupal\Core\Routing\MatcherDumper;
 use Drupal\drupflare\Hook\Requirements;
 use Drupal\drupflare\Host;
 use Drupal\drupflare\Install\Requirements\DrupflareRequirements;
-use Drupal\drupflare\ImageToolkit\CfwImageToolkit;
+use Drupal\drupflare\Plugin\ImageToolkit\CfwImageToolkit;
 use Drupal\drupflare\Plugin\Mail\CfwMail;
 use Drupal\drupflare\Cache\CfwCacheBackend;
 use Drupal\drupflare\Cache\CfwCacheBackendFactory;
@@ -131,7 +131,7 @@ $classes = [
 	'Drupal\drupflare\RequestResetter',
 	'Drupal\drupflare\DrupflareServiceProvider',
 	'Drupal\drupflare\Http\FetchHandler',
-	'Drupal\drupflare\ImageToolkit\CfwImageToolkit',
+	'Drupal\drupflare\Plugin\ImageToolkit\CfwImageToolkit',
 	'Drupal\drupflare\Logger\CfwLogger',
 	'Drupal\drupflare\Plugin\Mail\CfwMail',
 	'Drupal\drupflare\Queue\CfwDeferredHttp',

@@ -107,7 +107,7 @@ use Drupal\drupflare\Plugin\Mail\CfwMail;
 use Drupal\Core\Extension\Requirement\RequirementSeverity;
 use Drupal\Core\State\StateInterface;
 use Drupal\drupflare\Hook\Requirements;
-use Drupal\drupflare\ImageToolkit\CfwImageToolkit;
+use Drupal\drupflare\Plugin\ImageToolkit\CfwImageToolkit;
 use Drupal\drupflare\Queue\CfwDeferredHttp;
 use Symfony\Component\Routing\Route;
 use Symfony\Component\Routing\RouteCollection;

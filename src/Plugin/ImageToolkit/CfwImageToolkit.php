@@ -2,9 +2,13 @@
 
 declare(strict_types=1);
 
-namespace Drupal\drupflare\ImageToolkit;
+namespace Drupal\drupflare\Plugin\ImageToolkit;
 
+use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\ImageToolkit\ImageToolkitOperationManagerInterface;
+use Psr\Log\LoggerInterface;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
 use Drupal\Core\ImageToolkit\ImageToolkitBase;
@@ -37,6 +41,30 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
 ]
 class CfwImageToolkit extends ImageToolkitBase
 {
+	/**
+	 * The logger channel is named, because `LoggerInterface` alone cannot autowire.
+	 *
+	 * Without this the plugin is discovered and available and then throws
+	 * `AutowiringFailedException` on instantiation, which is the same outage one layer later.
+	 */
+	public function __construct(
+		array $configuration,
+		string $plugin_id,
+		array $plugin_definition,
+		ImageToolkitOperationManagerInterface $operation_manager,
+		#[Autowire('logger.channel.image')] LoggerInterface $logger,
+		ConfigFactoryInterface $config_factory,
+	) {
+		parent::__construct(
+			$configuration,
+			$plugin_id,
+			$plugin_definition,
+			$operation_manager,
+			$logger,
+			$config_factory,
+		);
+	}
+
 	/**
 	 * Source width, or NULL when unknown.
 	 */
