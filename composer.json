@@ -36,7 +36,8 @@
 		"symfony/dependency-injection": "^7.0"
 	},
 	"suggest": {
-		"drupflare/rom": "The Drupal 11 database driver for Cloudflare Durable Object SQLite. Needed when the Worker stores the site in the Durable Object rather than in an external database."
+		"drupflare/rom": "The Drupal 11 database driver for Cloudflare Durable Object SQLite. Needed when the Worker stores the site in the Durable Object rather than in an external database.",
+		"drupal/externalauth": "Maps a verified single sign-on identity onto a Drupal account. Required for provider login; without it the host verifies the token and the login is refused."
 	},
 	"autoload": {
 		"psr-4": {
