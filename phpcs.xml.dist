@@ -135,6 +135,7 @@
 	<rule ref="Drupal">
 		<exclude name="Generic.PHP.UpperCaseConstant.Found" />
 		<exclude name="Generic.WhiteSpace.DisallowTabIndent" />
+		<exclude name="Generic.CodeAnalysis.UselessOverridingMethod.Found" />
 		<exclude name="Drupal.WhiteSpace.ScopeIndent" />
 		<exclude name="Drupal.WhiteSpace.ObjectOperatorIndent" />
 		<exclude name="Drupal.WhiteSpace.ScopeClosingBrace" />
