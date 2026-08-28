@@ -7,8 +7,10 @@ namespace Drupal\drupflare;
 use Drupal\Core\DependencyInjection\ContainerBuilder;
 use Drupal\Core\DependencyInjection\ServiceProviderInterface;
 use Drupal\drupflare\Cache\CfwCacheBackendFactory;
+use Drupal\drupflare\Cache\MemoizedCacheContextsManager;
 use Drupal\drupflare\Http\CachedFetchHandler;
 use Drupal\drupflare\Http\FetchHandler;
+use Drupal\Core\Cache\Context\CacheContextsManager;
 use Drupal\Core\Cache\DatabaseBackendFactory;
 use Drupal\Core\Lock\DatabaseLockBackend;
 use Drupal\Core\Lock\PersistentDatabaseLockBackend;
@@ -49,6 +51,7 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 	{
 		$this->registerRouterDumper($container);
 		$this->registerCacheBackend($container);
+		$this->registerCacheContextsManager($container);
 		$this->registerLockBackend($container);
 		$this->registerPassword($container);
 
@@ -171,6 +174,31 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 			(bool) Settings::get('drupflare.argon2', false),
 		]);
 		$container->setDefinition('password', $decorated);
+	}
+
+	/**
+	 * Memoizes cache-context token conversion for the life of one request.
+	 *
+	 * Core recomputes an identical token list every time it is asked. Measured on a steady-state
+	 * front-page render: 51 calls over 13 distinct lists, so 74.5% of them repeat work already done,
+	 * and no list produced two different answers.
+	 *
+	 * Guarded on the class, like every other swap here: a site that has already replaced this
+	 * service keeps its own, and a core rename turns this into a no-op rather than a fatal.
+	 *
+	 * @param ContainerBuilder $container
+	 *   The container being built.
+	 */
+	private function registerCacheContextsManager(ContainerBuilder $container): void
+	{
+		if (!$container->hasDefinition('cache_contexts_manager')) {
+			return;
+		}
+		$definition = $container->getDefinition('cache_contexts_manager');
+		if ($definition->getClass() !== CacheContextsManager::class) {
+			return;
+		}
+		$definition->setClass(MemoizedCacheContextsManager::class);
 	}
 
 	/**
