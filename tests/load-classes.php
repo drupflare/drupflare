@@ -426,9 +426,24 @@ ok(
 		'cfwMail',
 	),
 );
+// A ROW EITHER WAY, and this used to assert the opposite. With the entry only inside the available
+// branch, a deployment without the file capability got no row at all -- uploads land in MEMFS and
+// vanish on eviction, reported nowhere. The absent case is the one that most needs saying, so it is
+// an Error row rather than a missing one
 ok(
-	'the durable-file entry is absent when the file capability is',
-	!isset($present['drupflare_file_wrapper']),
+	'the durable-file entry is present when the capability is absent',
+	isset($present['drupflare_file_wrapper']),
+);
+ok(
+	'and reports it as an error rather than an omission',
+	($present['drupflare_file_wrapper']['severity'] ?? null) === RequirementSeverity::Error,
+);
+ok(
+	'and names the consequence, which nothing else reports',
+	str_contains(
+		$present['drupflare_file_wrapper']['description']->getUntranslatedString(),
+		'lost when this object is evicted',
+	),
 );
 
 // #region router dump fingerprint
