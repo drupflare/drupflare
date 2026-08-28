@@ -50,6 +50,7 @@ use Drupal\drupflare\Plugin\ImageToolkit\CfwImageToolkit;
 use Drupal\drupflare\Plugin\Mail\CfwMail;
 use Drupal\drupflare\Cache\CfwCacheBackend;
 use Drupal\drupflare\Cache\CfwCacheBackendFactory;
+use Drupal\drupflare\Cache\MemoizedCacheContextsManager;
 use Drupal\drupflare\Routing\CfwMatcherDumper;
 use Drupal\drupflare\StreamWrapper\HttpsStreamWrapper;
 use Drupflare\StreamHttp\HttpsStreamWrapper as BaseHttpsStreamWrapper;
@@ -565,5 +566,143 @@ ok(
 );
 
 // #endregion
+
+// #region cache-context memo
+echo "\nCache-context memoisation\n";
+
+/**
+ * The smallest container the manager needs: a context service, a request stack and an account.
+ *
+ * Hand-built rather than booted, because what is under test is the memo's generation logic and a
+ * full kernel would make the account and the request harder to move, not easier.
+ */
+final class MemoProbeContext implements \Drupal\Core\Cache\Context\CacheContextInterface
+{
+	public int $calls = 0;
+
+	public string $value = 'first';
+
+	public static function getLabel()
+	{
+		return 'probe';
+	}
+
+	public function getContext()
+	{
+		$this->calls++;
+		return $this->value;
+	}
+
+	public function getCacheableMetadata()
+	{
+		return new \Drupal\Core\Cache\CacheableMetadata();
+	}
+}
+
+final class MemoProbeContainer implements \Symfony\Component\DependencyInjection\ContainerInterface
+{
+	public function __construct(public array $services) {}
+
+	public function set(string $id, ?object $service): void
+	{
+		$this->services[$id] = $service;
+	}
+
+	public function get(string $id, int $invalidBehavior = 1): ?object
+	{
+		return $this->services[$id] ?? null;
+	}
+
+	public function has(string $id): bool
+	{
+		return isset($this->services[$id]);
+	}
+
+	public function initialized(string $id): bool
+	{
+		return isset($this->services[$id]);
+	}
+
+	public function getParameter(string $name): \UnitEnum|array|string|int|float|bool|null
+	{
+		return null;
+	}
+
+	public function hasParameter(string $name): bool
+	{
+		return false;
+	}
+
+	public function setParameter(string $name, $value): void {}
+}
+
+$probeContext = new MemoProbeContext();
+$account = new class {
+	public string|int $id = 0;
+
+	public function id()
+	{
+		return $this->id;
+	}
+};
+$requestStack = new \Symfony\Component\HttpFoundation\RequestStack();
+$requestStack->push(\Symfony\Component\HttpFoundation\Request::create('/'));
+
+$memoContainer = new MemoProbeContainer([
+	'cache_context.probe' => $probeContext,
+	'request_stack' => $requestStack,
+	'current_user' => $account,
+]);
+$memo = new MemoizedCacheContextsManager($memoContainer, ['probe']);
+
+$first = $memo->convertTokensToKeys(['probe']);
+$callsAfterFirst = $probeContext->calls;
+$second = $memo->convertTokensToKeys(['probe']);
+
+ok(
+	'a repeated token list is answered from the memo rather than recomputed',
+	$probeContext->calls === $callsAfterFirst,
+	"calls went $callsAfterFirst -> {$probeContext->calls}",
+);
+ok('the memoised answer is the same object', $first === $second);
+ok('and it carries the same keys', $first->getKeys() === $second->getKeys());
+
+// THE ONE THAT MATTERS. A context value can change without the request changing, and serving a key
+// computed for another account is the uid-1 leak shape this project has shipped once already.
+$probeContext->value = 'second';
+$account->id = 7;
+$afterSwitch = $memo->convertTokensToKeys(['probe']);
+ok(
+	'an account switch invalidates the memo, so the new value is used',
+	$afterSwitch->getKeys() !== $first->getKeys(),
+	implode(',', $afterSwitch->getKeys()),
+);
+
+// a new request is a new generation too
+$probeContext->value = 'third';
+$requestStack->push(\Symfony\Component\HttpFoundation\Request::create('/other'));
+$afterRequest = $memo->convertTokensToKeys(['probe']);
+ok(
+	'a new request invalidates the memo',
+	$afterRequest->getKeys() !== $afterSwitch->getKeys(),
+	implode(',', $afterRequest->getKeys()),
+);
+
+// the key is the SET, so two orderings of one list share an entry rather than computing twice
+$memoOrder = new MemoizedCacheContextsManager(
+	new MemoProbeContainer([
+		'cache_context.probe' => $probeContext,
+		'cache_context.other' => new MemoProbeContext(),
+		'request_stack' => $requestStack,
+		'current_user' => $account,
+	]),
+	['probe', 'other'],
+);
+$ab = $memoOrder->convertTokensToKeys(['probe', 'other']);
+$ba = $memoOrder->convertTokensToKeys(['other', 'probe']);
+ok('token order does not split the memo', $ab === $ba);
+
+// #endregion
+
 printf("\n%d passed, %d failed\n", $pass, $fail);
 exit($fail === 0 ? 0 : 1);
