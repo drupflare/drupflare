@@ -33,7 +33,7 @@ that go through it.
 
 A Worker has no sockets, no `gd`, no SMTP transport and no writable disk worth using. PHP compiled to
 WebAssembly arrives missing what Drupal assumes, and compiling those libraries in is expensive: `gd`
-alone costs **684,821 bytes** of a bundle that must fit Cloudflare's 3 MB free ceiling.
+alone costs 684,821 bytes of a bundle that must fit Cloudflare's 3 MB free ceiling.
 
 The platform already provides all of it. Cloudflare has an email binding, `fetch()`, Cloudflare
 Images and Workers Logs. Drupal's mail system, image toolkit, HTTP transport and logger are
@@ -302,7 +302,7 @@ composer run lint       # phpcs: docs, naming, API misuse
 composer run analyze    # phpstan level 5, --memory-limit=1G
 bunx prettier --check . # layout, every language including PHP
 
-php tests/health-suite.php                             # 553 assertions
+php tests/health-suite.php
 DRUPAL_ROOT=/path/to/drupal php tests/load-classes.php # 94; loads every class for real
 ```
 
