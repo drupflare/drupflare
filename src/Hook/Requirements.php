@@ -113,6 +113,19 @@ final class Requirements
 				),
 				'severity' => RequirementSeverity::OK,
 			];
+		} else {
+			// A ROW EITHER WAY. This used to exist only INSIDE the branch, so a deployment without
+			// the file capability got no row at all about file storage -- uploads land in MEMFS and
+			// vanish on eviction, reported nowhere. An absent capability is the case that most
+			// needs saying.
+			$requirements['drupflare_file_wrapper'] = [
+				'title' => new TranslatableMarkup('Drupflare durable file storage'),
+				'value' => new TranslatableMarkup('Not available'),
+				'description' => new TranslatableMarkup(
+					'The host did not install the file capability, so uploaded files are written to the in-memory filesystem and are lost when this object is evicted. Nothing else reports this.',
+				),
+				'severity' => RequirementSeverity::Error,
+			];
 		}
 
 		// gd is not compiled in, so `cfw_images` is the only toolkit a site can have. A missing

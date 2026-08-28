@@ -132,7 +132,23 @@ class CfwImageToolkit extends ImageToolkitBase
 			'image styles are applied at delivery rather than written to disk, so a saved derivative is a copy of the original.',
 			'untested',
 		);
-		return @copy($this->getSource(), $destination);
+		// `@` because a failed copy is a false return, not an exception, and the warning it emits
+		// says nothing a caller can act on -- but the REASON is worth keeping, so it is recorded
+		// rather than discarded with the warning
+		$copied = @copy($this->getSource(), $destination);
+		if (!$copied) {
+			$error = error_get_last();
+			Degradation::record(
+				'image.derivative_write',
+				sprintf(
+					'a derivative could not be written to %s: %s',
+					$destination,
+					$error['message'] ?? 'no reason reported',
+				),
+				'untested',
+			);
+		}
+		return $copied;
 	}
 
 	/**

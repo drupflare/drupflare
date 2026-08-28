@@ -3295,9 +3295,26 @@ ok(
 );
 ok('and carries no description', $report['drupflare_stream_wrapper']['description'] === null);
 install_host([]);
+// A ROW EITHER WAY, and this used to assert the opposite. With the entry emitted only INSIDE
+// `available()`, a deployment with no file capability got no row at all -- uploads land in MEMFS
+// and vanish on eviction, reported nowhere. The absent case is the one that needs saying.
+$absentReport = $requirements->runtimeRequirements();
 ok(
-	'the durable-file entry is absent when the capability is',
-	!isset($requirements->runtimeRequirements()['drupflare_file_wrapper']),
+	'the durable-file entry is present when the capability is NOT',
+	isset($absentReport['drupflare_file_wrapper']),
+);
+ok(
+	'and it is an error rather than a silent omission',
+	($absentReport['drupflare_file_wrapper']['severity'] ?? null) === RequirementSeverity::Error,
+);
+// `getUntranslatedString()` rather than a string cast: `__toString()` reaches for the container's
+// translation service, which this harness has no container for
+ok(
+	'and it says where the uploads go',
+	str_contains(
+		$absentReport['drupflare_file_wrapper']['description']->getUntranslatedString(),
+		'in-memory filesystem',
+	),
 );
 // #endregion
 // #region the router dumper's skip

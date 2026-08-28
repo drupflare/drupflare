@@ -150,10 +150,21 @@ class CfwMatcherDumper extends MatcherDumper
 					$this->tableName .
 					'} (alias) WHERE alias IS NOT NULL',
 			);
-		} catch (Throwable) {
-			// the full index costs rows; it does not break anything, so a failed swap is survivable
+		} catch (Throwable $e) {
+			// survivable, but not free and no longer silent: the full index bills all 419 routes
+			// where 402 store a NULL alias, so a permanently failing swap is ~20% of every rebuild
+			// on the meter that BINDS regeneration, and nothing could see it
+			self::$indexSwapError = $e->getMessage();
 		}
 	}
+
+	/**
+	 * Why the partial-alias swap last failed, or NULL when it has not.
+	 *
+	 * Read by `Hook\Requirements`, so a permanent overcharge appears in the status report instead
+	 * of being inferred from a row count nobody is watching.
+	 */
+	public static ?string $indexSwapError = null;
 
 	/**
 	 * A stable fingerprint of a route collection.
@@ -241,8 +252,19 @@ class CfwMatcherDumper extends MatcherDumper
 				->countQuery()
 				->execute()
 				->fetchField();
-		} catch (Throwable) {
+		} catch (Throwable $e) {
+			// -1 is the caller's "unknown", and it used to be indistinguishable from a table that
+			// really holds -1 rows -- which is to say, from nothing at all
+			self::$rowCountError = $e->getMessage();
 			return -1;
 		}
 	}
+
+	/**
+	 * Why the last row count failed, or NULL when it has not.
+	 *
+	 * `countRows()` returns -1 for "could not read", which is reported as a number and reads as a
+	 * measurement. This is what separates the two.
+	 */
+	public static ?string $rowCountError = null;
 }
