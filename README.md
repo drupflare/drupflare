@@ -43,20 +43,21 @@ Images and Workers Logs. Drupal's mail system, image toolkit, HTTP transport and
 
 ## 🧩 What It Provides
 
-| Class                              | Replaces                      | Host function                                      |
-| ---------------------------------- | ----------------------------- | -------------------------------------------------- |
-| `Host`                             | -                             | the seam itself; every other class goes through it |
-| `Plugin\Mail\CfwMail`              | `mail()` / SMTP               | `cfwMail`                                          |
-| `ImageToolkit\CfwImageToolkit`     | `gd`                          | `cfwImageUrl`                                      |
-| `Logger\CfwLogger`                 | `dblog` as the only sink      | `cfwLog`                                           |
-| `StreamWrapper\HttpsStreamWrapper` | the absent `https://` wrapper | `cfwFetch`                                         |
-| `Queue\CfwDeferredHttp`            | a blocking HTTP client        | `cfwHttpCacheGet`, `cfwQueueFetch`, `cfwFetchSync` |
-| `Http\FetchHandler`                | curl / the stream handler     | `cfHost` (**needs JSPI, not exercised**)           |
-| `DrupflareServiceProvider`         | -                             | swaps `http_handler_stack`, builds the resetter    |
-| `RequestResetter`                  | a fresh PHP process           | -                                                  |
-| `drupflare.module`                 | a host-side registration call | registers `http`/`https` on every request          |
-| `Hook\Requirements`                | -                             | probes all of them for the status report           |
-| `Install\Requirements\Drupflare…`  | -                             | the same probe at install time, never blocking     |
+| Class                                | Replaces                            | Host function                                      |
+| ------------------------------------ | ----------------------------------- | -------------------------------------------------- |
+| `Host`                               | -                                   | the seam itself; every other class goes through it |
+| `Plugin\Mail\CfwMail`                | `mail()` / SMTP                     | `cfwMail`                                          |
+| `ImageToolkit\CfwImageToolkit`       | `gd`                                | `cfwImageUrl`                                      |
+| `Logger\CfwLogger`                   | `dblog` as the only sink            | `cfwLog`                                           |
+| `StreamWrapper\HttpsStreamWrapper`   | the absent `https://` wrapper       | `cfwFetch`                                         |
+| `Queue\CfwDeferredHttp`              | a blocking HTTP client              | `cfwHttpCacheGet`, `cfwQueueFetch`, `cfwFetchSync` |
+| `Http\FetchHandler`                  | curl / the stream handler           | `cfHost` (**needs JSPI, not exercised**)           |
+| `Cache\MemoizedCacheContextsManager` | recomputing an identical token list | -                                                  |
+| `DrupflareServiceProvider`           | -                                   | swaps `http_handler_stack`, builds the resetter    |
+| `RequestResetter`                    | a fresh PHP process                 | -                                                  |
+| `drupflare.module`                   | a host-side registration call       | registers `http`/`https` on every request          |
+| `Hook\Requirements`                  | -                                   | probes all of them for the status report           |
+| `Install\Requirements\Drupflare…`    | -                                   | the same probe at install time, never blocking     |
 
 Three of these carry behaviour that differs from what they replace.
 
@@ -156,6 +157,15 @@ The HTTP transport needs no configuration. `DrupflareServiceProvider` rewrites
 first argument, so every consumer of `\Drupal::httpClient()` is redirected with no module changes.
 On a build **without JSPI** this override installs the handler that needs it; `CfwDeferredHttp` is
 the alternative and is selected per service.
+
+Cache-context conversion is memoised for the life of one request. `DrupflareServiceProvider` swaps
+`cache_contexts_manager` for `MemoizedCacheContextsManager`, which answers a repeated token list from
+a memo instead of recomputing it. On a steady-state front page core is asked to convert 51 token
+lists of which 13 are distinct, so 74.5% of the calls repeat work already done in that request.
+
+The memo is keyed on the request AND the current account, because `AccountSwitcher` changes the user
+mid-request and `user.permissions` reads from it. The swap is skipped if the service has already been
+replaced by something else.
 
 The stream wrapper must be registered before anything touches a URL. Enabling the module is enough:
 `drupflare.module` registers it and `drupflare.install` covers the one request the module file
