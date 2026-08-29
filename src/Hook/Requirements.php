@@ -6,9 +6,11 @@ namespace Drupal\drupflare\Hook;
 
 use Drupal\Core\Extension\Requirement\RequirementSeverity;
 use Drupal\Core\Hook\Attribute\Hook;
+use Drupal\Core\Site\Settings;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
+use Drupal\drupflare\Password\CfwPassword;
 use Drupal\drupflare\StreamWrapper\CfwFileStreamWrapper;
 use Throwable;
 use XMLWriter;
@@ -161,7 +163,7 @@ final class Requirements
 	}
 
 	/**
-	 * Clears an install-blocking `ext-xmlwriter` error when the host supplies the class instead.
+	 * Corrects status-report rows that describe a php.ini this runtime does not have.
 	 *
 	 * `extension_loaded()` IS A BUILT-IN, so the conditional-declaration pattern every other shim
 	 * here uses cannot bind to it -- the same wall `password_hash()` hit, and the reason argon2
@@ -170,15 +172,128 @@ final class Requirements
 	 * that into a `RequirementSeverity::Error` that blocks installation outright.
 	 *
 	 * `hook_requirements_alter()` is the seam Drupal provides for exactly this, so the fix stays
-	 * host-side and the module is unmodified. It is narrow: it clears one
-	 * named key, and only when the class is really there and really usable, so a build without the
-	 * polyfill keeps the honest error.
+	 * host-side and the modules are unmodified. Every row here is REPLACED rather than removed, and
+	 * one that reports a real loss keeps a warning: an operator reading the status report has to be
+	 * able to tell what this platform supplies from what it genuinely cannot.
 	 *
 	 * @param array $requirements
 	 *   Every requirement Drupal collected, by key.
 	 */
 	#[Hook('requirements_alter')]
 	public function requirementsAlter(array &$requirements): void
+	{
+		$this->alterSitemapExtensions($requirements);
+		$this->alterPlatformRows($requirements);
+	}
+
+	/**
+	 * Replaces core rows that describe a php.ini this runtime does not have.
+	 *
+	 * NONE OF THESE IS MUTED. Each one is a true statement about a stock PHP host and a misleading
+	 * one here, so each is replaced with what is actually the case and why. A row that reports a
+	 * genuine loss keeps its severity: `gd` really is absent and code calling `imagecreate*`
+	 * directly really will fail, so it stays a warning rather than becoming an OK.
+	 *
+	 * @param array $requirements
+	 *   Every requirement Drupal collected, by key.
+	 */
+	private function alterPlatformRows(array &$requirements): void
+	{
+		// core marks a missing gd an Error because it assumes image styles cannot work. Here they
+		// do: `cfw_images` is a toolkit backed by the host, so derivatives are served
+		if (isset($requirements['php_extensions']) && !extension_loaded('gd')) {
+			$requirements['php_extensions'] = [
+				'title' => new TranslatableMarkup('PHP extensions'),
+				'value' => new TranslatableMarkup('Enabled, except gd'),
+				'description' => new TranslatableMarkup(
+					'This runtime is PHP compiled to WebAssembly and carries no gd. Image styles and derivatives work through the cfw_images toolkit, which resizes at the edge instead. Contributed code that calls the gd functions directly will still fail, so gd is reported rather than hidden.',
+				),
+				'severity' => RequirementSeverity::Warning,
+			];
+		}
+
+		// the mb_* functions exist, supplied by the host; `extension_loaded()` reports COMPILED
+		// extensions and cannot be shimmed, which is the same wall the xmlwriter row hits
+		if (isset($requirements['unicode']) && !extension_loaded('mbstring')) {
+			$requirements['unicode'] = [
+				'title' => new TranslatableMarkup('Unicode library'),
+				'value' => new TranslatableMarkup('Provided by Drupflare'),
+				'description' => new TranslatableMarkup(
+					'There is no ext-mbstring in this build. Drupflare supplies the mb_* functions the site uses, checked against a Unicode corpus; extension_loaded() still answers FALSE because it reports compiled extensions.',
+				),
+				'severity' => RequirementSeverity::OK,
+			];
+		}
+
+		// the host buffers the whole response by construction -- it is captured and returned as one
+		// body, so there is no streaming write for output buffering to make cheaper
+		if (isset($requirements['output_buffering'])) {
+			$requirements['output_buffering'] = [
+				'title' => new TranslatableMarkup('Output Buffering'),
+				'value' => new TranslatableMarkup('Not applicable'),
+				'description' => new TranslatableMarkup(
+					'A Worker returns one response body rather than streaming to a socket, so the whole render is buffered by the host whatever this setting says.',
+				),
+				'severity' => RequirementSeverity::OK,
+			];
+		}
+
+		// core tells the operator to install ext-argon2, which is not a thing that can be done to a
+		// wasm build. The capability exists and is a host-side switch, so the row names the switch.
+		// Three states rather than two, because `CfwPassword` distinguishes a missing bridge from an
+		// operator who has not turned it on and only one of those is actionable
+		if (
+			isset($requirements['password_hashing']) &&
+			!in_array('argon2id', password_algos(), true)
+		) {
+			$bridge = CfwPassword::bridgeAvailable();
+			$enabled = (bool) Settings::get('drupflare.argon2', false);
+			if ($bridge && $enabled) {
+				$value = new TranslatableMarkup('Passwords are hashed with argon2id');
+				$description = new TranslatableMarkup(
+					'Hashing runs on the host at m=19456 KiB, t=2, p=1, and is written in the same $argon2id$ encoding ext-argon2 produces, so the hashes stay verifiable off this platform. password_algos() still lists only bcrypt because it reports compiled extensions.',
+				);
+			} elseif ($bridge) {
+				$value = new TranslatableMarkup('bcrypt, with argon2id available');
+				$description = new TranslatableMarkup(
+					'There is no ext-argon2 in this build, so core recommends installing one that cannot be installed. Drupflare hashes with argon2id on the host instead; set the ARGON2 variable to turn it on. Existing bcrypt hashes keep working and each account is upgraded at its next login.',
+				);
+			} else {
+				$value = new TranslatableMarkup('bcrypt');
+				$description = new TranslatableMarkup(
+					'There is no ext-argon2 in this build and this deployment did not install the host argon2 capability, so bcrypt is what is available. Installing that capability is what makes argon2id reachable.',
+				);
+			}
+			$requirements['password_hashing'] = [
+				'title' => new TranslatableMarkup('Password hashing'),
+				'value' => $value,
+				'description' => $description,
+				'severity' => RequirementSeverity::OK,
+			];
+		}
+
+		// opcache is compiled in and deliberately DISABLED, which is why this row is honest and only
+		// its reason is missing: measured on this interpreter it bought no render time and cost
+		// ~37 MiB of the 128 MiB an isolate gets
+		if (isset($requirements['php_opcache']) && extension_loaded('Zend OPcache')) {
+			$requirements['php_opcache'] = [
+				'title' => new TranslatableMarkup('PHP OPcode caching'),
+				'value' => new TranslatableMarkup('Disabled deliberately'),
+				'description' => new TranslatableMarkup(
+					'OPcache is compiled into this interpreter and switched off. Measured here it changed render time by about a millisecond and cost roughly 37 MiB of the 128 MiB this isolate has, which is memory the site needs to render at all.',
+				),
+				'severity' => RequirementSeverity::OK,
+			];
+		}
+	}
+
+	/**
+	 * Clears an install-blocking `ext-xmlwriter` error when the host supplies the class instead.
+	 *
+	 * @param array $requirements
+	 *   Every requirement Drupal collected, by key.
+	 */
+	private function alterSitemapExtensions(array &$requirements): void
 	{
 		if (!isset($requirements['simple_sitemap_php_extensions'])) {
 			return;

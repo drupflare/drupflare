@@ -64,6 +64,52 @@ use Throwable;
 final class CachedFetchHandler
 {
 	/**
+	 * URLs queued rather than answered since the list was last cleared.
+	 *
+	 * A deferral is not a failure, it is an answer that has not arrived yet -- so a caller that
+	 * recorded "checked" on the way past recorded something untrue. This is what lets a consumer
+	 * notice and reopen it; see the cron hook that reopens the update module's check.
+	 */
+	private static array $deferred = [];
+
+	/**
+	 * The URLs queued rather than answered since the flag was last cleared.
+	 *
+	 * The URLS and not a boolean, because a consumer has to reopen only ITS OWN check. A plain flag
+	 * made an announcements deferral clear the update module's freshly fetched release data on the
+	 * same cron, so the data was refetched and discarded forever -- measured, and it looked exactly
+	 * like the fetch never working.
+	 *
+	 * @return array
+	 *   Deferred URLs, in the order they were queued.
+	 */
+	public static function deferredUrls(): array
+	{
+		return self::$deferred;
+	}
+
+	/**
+	 * Whether a fetch was queued rather than answered since the flag was last cleared.
+	 *
+	 * @return bool
+	 *   TRUE if a fetch was queued, FALSE if all were answered.
+	 */
+	public static function deferredThisRequest(): bool
+	{
+		return self::$deferred !== [];
+	}
+
+	/**
+	 * Clears the list, so one cron run cannot reopen a check the next one did not defer.
+	 *
+	 * @return void
+	 */
+	public static function clearDeferred(): void
+	{
+		self::$deferred = [];
+	}
+
+	/**
 	 * Handles one request.
 	 *
 	 * @param RequestInterface $request
@@ -102,6 +148,7 @@ final class CachedFetchHandler
 			$why = is_array($reply)
 				? (string) ($reply['error'] ?? 'no reason given')
 				: 'the host returned ' . get_debug_type($reply);
+			self::$deferred[] = $url;
 			return new RejectedPromise(new ConnectException($why, $request));
 		}
 
