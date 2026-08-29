@@ -14,15 +14,39 @@
  */
 
 $root = __DIR__ . '/..';
-spl_autoload_register(function (string $class) use ($root): void {
-	$prefix = 'Drupal\\drupflare\\';
-	if (!str_starts_with($class, $prefix)) {
-		return;
-	}
-	$rel = str_replace('\\', '/', substr($class, strlen($prefix)));
-	$file = $root . '/src/' . $rel . '.php';
-	if (is_file($file)) {
-		require_once $file;
+
+/**
+ * Where a PSR-4 root may live, in the order a checkout is likely to have it.
+ *
+ * `Drupflare\\StreamHttp\\` is a SEPARATE repository this module requires through composer, and the
+ * gate checks the siblings out without running composer -- so in CI there is no `vendor/` mapping it
+ * and `HttpsStreamWrapper` is simply absent. That was invisible while an earlier step failed first;
+ * once it passed, every CachedFetchHandler case here died on a class-not-found. The packer already
+ * reads `../stream-http/src` for the same reason, and `STREAM_HTTP_SRC` relocates it the same way.
+ */
+$psr4 = [
+	'Drupal\\drupflare\\' => [$root . '/src'],
+	'Drupflare\\StreamHttp\\' => array_filter([
+		getenv('STREAM_HTTP_SRC') ?: null,
+		$root . '/vendor/drupflare/stream-http/src',
+		$root . '/../stream-http/src',
+		$root . '/../../stream-http/src',
+	]),
+];
+
+spl_autoload_register(function (string $class) use ($psr4): void {
+	foreach ($psr4 as $prefix => $roots) {
+		if (!str_starts_with($class, $prefix)) {
+			continue;
+		}
+		$rel = str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+		foreach ($roots as $dir) {
+			$file = $dir . '/' . $rel;
+			if (is_file($file)) {
+				require_once $file;
+				return;
+			}
+		}
 	}
 });
 
