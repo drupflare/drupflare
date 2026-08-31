@@ -4212,5 +4212,96 @@ ok(
 );
 // #endregion
 
+// #region the advisory scan, which is the half that READS what update computed
+
+require_once __DIR__ . '/../src/Update/AdvisoryScan.php';
+
+// A summary is built from rows, so it is testable without a kernel. What it must never do is report
+// "no advisories" for a site nothing has checked: absent data and clean data are different facts and
+// only one of them is safe to act on.
+$scanner = new \Drupal\drupflare\Update\AdvisoryScan(
+	new class implements \Drupal\Core\State\StateInterface {
+		public array $written = [];
+		public function get($key, $default = null)
+		{
+			return $this->written[$key] ?? $default;
+		}
+		public function getMultiple(array $keys)
+		{
+			return [];
+		}
+		public function set($key, $value)
+		{
+			$this->written[$key] = $value;
+		}
+		public function setMultiple(array $data) {}
+		public function delete($key)
+		{
+			unset($this->written[$key]);
+		}
+		public function deleteMultiple(array $keys) {}
+		public function resetCache() {}
+		public function getValuesSetDuringRequest(string $key): ?array
+		{
+			return null;
+		}
+	},
+	new class implements \Drupal\Core\KeyValueStore\KeyValueFactoryInterface {
+		public function get($collection)
+		{
+			throw new \RuntimeException('not used');
+		}
+	},
+);
+
+$none = $scanner->summarise(null, 100);
+ok(
+	'a site with no project data reports UNCHECKED rather than clean',
+	$none['checked'] === false && $none['insecure'] === [] && $none['reason'] !== '',
+	json_encode($none),
+);
+
+$empty = $scanner->summarise([], 100);
+ok('and so does one whose project data is empty', $empty['checked'] === false, json_encode($empty));
+
+$mixed = $scanner->summarise(
+	[
+		'ctools' => ['status' => 1, 'existing_version' => '4.0.4', 'recommended' => '4.1.0'],
+		'revoked_thing' => ['status' => 2, 'existing_version' => '1.0', 'recommended' => '2.0'],
+		'unsupported_thing' => ['status' => 3, 'existing_version' => '1.0', 'recommended' => '2.0'],
+		'token' => ['status' => 4, 'existing_version' => '1.13', 'recommended' => '1.15'],
+		'node' => ['status' => 5, 'existing_version' => '11.0.0', 'recommended' => '11.0.0'],
+		'never_checked' => ['status' => -1],
+	],
+	100,
+);
+ok(
+	'the three insecure statuses are reported and the current one is not',
+	count($mixed['insecure']) === 3 && $mixed['checked'] === true,
+	json_encode(array_column($mixed['insecure'], 'project')),
+);
+ok(
+	'behind-but-not-insecure is kept separate, so a security signal keeps meaning something',
+	count($mixed['stale']) === 1 && $mixed['stale'][0]['project'] === 'token',
+	json_encode($mixed['stale']),
+);
+ok(
+	'each insecure entry names why, so an operator does not have to look up a status code',
+	$mixed['insecure'][0]['why'] === 'not-secure',
+	json_encode($mixed['insecure'][0]),
+);
+ok(
+	'a row with no integer status is skipped rather than guessed at',
+	!in_array('never_checked', array_column($mixed['insecure'], 'project'), true) &&
+		!in_array('never_checked', array_column($mixed['stale'], 'project'), true),
+	json_encode($mixed),
+);
+ok(
+	'the record carries a schema, so a host reading an older one can refuse it',
+	$mixed['schema'] === \Drupal\drupflare\Update\AdvisoryScan::SCHEMA && $mixed['at'] === 100,
+	json_encode(['schema' => $mixed['schema'], 'at' => $mixed['at']]),
+);
+// #endregion
+
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);

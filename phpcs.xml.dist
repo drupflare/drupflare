@@ -174,4 +174,14 @@
 		<exclude-pattern>stubs/*</exclude-pattern>
 		<exclude-pattern>tests/*</exclude-pattern>
 	</rule>
+
+	<rule ref="Squiz.WhiteSpace.FunctionSpacing.Before">
+		<exclude-pattern>stubs/*</exclude-pattern>
+		<exclude-pattern>tests/*</exclude-pattern>
+	</rule>
+
+	<rule ref="Squiz.WhiteSpace.FunctionSpacing.After">
+		<exclude-pattern>stubs/*</exclude-pattern>
+		<exclude-pattern>tests/*</exclude-pattern>
+	</rule>
 </ruleset>
