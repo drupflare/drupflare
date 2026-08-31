@@ -345,8 +345,8 @@ final class RequestResetter
 	 * along with the storage, so resetting alone would throw away what the request just resolved and
 	 * make the next one rebuild it. `destruct()` writes it out under the cid it was resolved for, so
 	 * the next request pays one cache read. Both ids are among the five services measured as
-	 * destructing safely here; `theme.registry` is the one that is not, and it is deliberately
-	 * absent -- its runtime registry is keyed by theme name, so it does not have this defect anyway.
+	 * destructing safely here; `theme.registry` is the one that is not, and it is absent -- its
+	 * runtime registry is keyed by theme name, so it does not have this defect anyway.
 	 *
 	 * @return array
 	 *   What was cleared per id, so a half-applied reset is visible rather than assumed.
@@ -458,7 +458,7 @@ final class RequestResetter
 	 * so passing an empty array clears it through core's own API. It takes the argument by
 	 * reference, hence the local.
 	 *
-	 * `class_exists(..., false)` does NOT autoload, deliberately. If views has not been loaded in
+	 * `class_exists(..., false)` does NOT autoload. If views has not been loaded in
 	 * this interpreter then nothing set the static and there is nothing to clear; autoloading it
 	 * here would be this method creating the class it came to reset.
 	 *

@@ -18,7 +18,7 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
 /**
  * An image toolkit that never processes an image.
  *
- * Gd is deliberately not compiled into the wasm build -- it cost 684,821 bytes and
+ * Gd is not compiled into the wasm build -- it cost 684,821 bytes and
  * the platform already has Cloudflare Images, which resizes on delivery from a URL
  * rather than by rewriting files. So the correct toolkit here does NOT generate
  * derivatives: it records the source dimensions so Drupal's render pipeline can

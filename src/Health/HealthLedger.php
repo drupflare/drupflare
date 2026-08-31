@@ -8,7 +8,7 @@ use Drupal\drupflare\Host;
  * The PHP writer for cfw_health.
  *
  * One table, two writers: this class and src/ops/supervisor.ts. The table is owned by the host,
- * which is deliberate -- the ledger has to survive the interpreter that produced the entry, and a
+ * which it has to be -- the ledger must survive the interpreter that produced the entry, and a
  * PHP shutdown handler cannot see an isolate being killed.
  *
  * Writes go over the capability bridge rather than through Drupal's database layer, for the reason

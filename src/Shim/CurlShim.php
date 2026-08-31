@@ -10,7 +10,7 @@ use GuzzleHttp\Psr7\Request;
 /**
  * The `curl_*` subset, over CfwDeferredHttp.
  *
- * Five functions plus their error pair: init, setopt, exec, getinfo, close. That is deliberately
+ * Five functions plus their error pair: init, setopt, exec, getinfo, close. That is
  * not all of curl -- it is the subset ordinary contrib code actually uses, and every option outside
  * it is refused by name rather than ignored.
  *
@@ -154,7 +154,7 @@ final class CurlShim
 	/**
 	 * Shims curl_setopt_array().
 	 *
-	 * All-or-nothing on purpose: a partially applied option set is a request the caller did not ask
+	 * All-or-nothing: a partially applied option set is a request the caller did not ask
 	 * for, so the first unrecognised option refuses the whole array and the handle is untouched.
 	 *
 	 * @param array $handle
@@ -236,7 +236,7 @@ final class CurlShim
 			'request_method' => $method,
 			'size_download' => strlen($body),
 			'content_type' => $response->getHeaderLine('content-type'),
-			// not a curl field, and that is the point: a caller can SEE that this never left
+			// not a curl field, so a caller can SEE that this never left
 			'cfw_deferred' => $deferred,
 		];
 
@@ -312,7 +312,7 @@ final class CurlShim
 	 *   The handle.
 	 *
 	 * @return string
-	 *   The message; empty only when there genuinely was no error.
+	 *   The message; empty only when there was no error.
 	 */
 	public function error(array $handle): string
 	{

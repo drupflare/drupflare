@@ -12,7 +12,7 @@ use Drupal\drupflare\Health\TripwireInterface;
  * "LIKE or GLOB pattern too complex: SQLITE_ERROR", against SQLite's own default of 50,000 -- the
  * runtime lowers it by three orders of magnitude.
  *
- * The check runs on the TRANSLATED pattern, and that detail is the whole point: bracket-quoting a
+ * The check runs on the TRANSLATED pattern, which is the detail that matters: bracket-quoting a
  * metacharacter expands it threefold, so 20 asterisks become a 60-byte GLOB pattern and fail where
  * the input looked safe. It binds plain LIKE too, which the driver cannot intercept -- a Views
  * "contains" filter on a long search string fails inside the engine.

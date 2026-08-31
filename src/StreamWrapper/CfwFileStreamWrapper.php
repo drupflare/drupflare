@@ -150,7 +150,7 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 			}
 			if ($found) {
 				// an ABSENT b64 field is a malformed reply, not an empty file: defaulting it would
-				// make a broken host indistinguishable from a genuinely empty upload
+				// make a broken host indistinguishable from an empty upload
 				if (!array_key_exists('b64', $reply)) {
 					return $this->fail(
 						$options,
@@ -508,7 +508,7 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	 */
 	public static function getType(): int
 	{
-		// LOCAL is deliberately NOT set. It promises `realpath()` returns a usable filesystem path,
+		// LOCAL is NOT set. It promises `realpath()` returns a usable filesystem path,
 		// and code that believes it will hand the value to a native file function -- which cannot
 		// reach storage that lives in SQL.
 		return StreamWrapperInterface::NORMAL;
@@ -585,14 +585,14 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	 * {@inheritdoc}
 	 *
 	 * MATERIALISES ON DEMAND, which reverses what this method used to do. Returning FALSE was
-	 * defensible -- there is genuinely no path on any filesystem holding these bytes -- but it was
-	 * a SILENT gap, which is the one outcome a compatibility layer may not produce. `strata_files`
-	 * captured nothing for the same reason: `ManagedFileCapture` early-returns on a FALSE realpath, so a module
-	 * that looked installed and tested captured no files and nothing said so.
+	 * defensible -- no path on any filesystem holds these bytes -- but it was a SILENT gap, which
+	 * is the one outcome a compatibility layer may not produce. `strata_files` captured nothing for
+	 * the same reason: `ManagedFileCapture` early-returns on a FALSE realpath, so a module that
+	 * looked installed and tested captured no files and nothing said so.
 	 *
 	 * So the bytes are written into MEMFS under the real files path and that path is returned.
-	 * `is_file()` and `Hash::ofStream(fopen($path))` then both work against an UNMODIFIED module,
-	 * which is the whole product claim. The lazy-FS budget evicts what it writes.
+	 * `is_file()` and `Hash::ofStream(fopen($path))` then both work against an UNMODIFIED module.
+	 * The lazy-FS budget evicts what it writes.
 	 *
 	 * ABOVE THE THRESHOLD IT STILL RETURNS FALSE, but DECLARES rather than staying quiet -- the
 	 * declared-degradation pattern in its first real use. The caller gets the same answer it used
@@ -775,7 +775,7 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	/**
 	 * A content type from the extension, for the stored metadata.
 	 *
-	 * Deliberately a short list rather than a full map: the value is advisory metadata on the
+	 * A short list rather than a full map: the value is advisory metadata on the
 	 * stored row, and Drupal has its own MIME guesser for anything user-facing.
 	 */
 	private static function mimeFor(string $uri): ?string

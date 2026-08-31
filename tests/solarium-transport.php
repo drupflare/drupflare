@@ -4,10 +4,10 @@
  * @file
  * Drives SolariumTransport against real Solarium objects.
  *
- * SEPARATE FROM health-suite.php ON PURPOSE, and not because it is a second file for one feature.
+ * SEPARATE FROM health-suite.php, and not because it is a second file for one feature.
  * These assertions need `vrzno_env()` to exist so `Host::call()` reaches a double, and defining that
  * global in the health suite would change what every other Host-touching assertion there measures.
- * The isolation is the point; the domain is search transport and this is its only file.
+ * Isolated: the domain is search transport and this is its only file.
  *
  * SKIPS WHEN SOLARIUM IS ABSENT, loudly. The worker's gate checks this repo out with no
  * `composer install`, so a hard failure there would be reporting the absence of a dev dependency as

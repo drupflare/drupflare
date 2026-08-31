@@ -50,7 +50,7 @@ final class SolariumTransport implements EventSubscriberInterface
 	/**
 	 * Solarium names its events by CLASS, so this is the class name as a literal.
 	 *
-	 * Deliberately a string rather than `Events::PRE_EXECUTE_REQUEST`: the constant would make this
+	 * A string rather than `Events::PRE_EXECUTE_REQUEST`: the constant would make this
 	 * file load Solarium, and Solarium is a `require-dev` here. As a literal, a site without
 	 * search_api_solr registers a subscriber for an event nothing ever dispatches, which costs one
 	 * array entry and cannot fatal.

@@ -14,7 +14,7 @@ use Drupal\drupflare\Health\TripwireInterface;
  * HTML was stored in cfw_page -- which is the ANONYMOUS cache -- and it was served to the next
  * anonymous visitor.
  *
- * The check is deliberately three separate conditions rather than one: any of them alone is
+ * The check is three separate conditions rather than one: any of them alone is
  * enough to make the entry unsafe, and naming which one failed is what makes the ledger useful.
  */
 final class CacheAnonymousPurity implements TripwireInterface

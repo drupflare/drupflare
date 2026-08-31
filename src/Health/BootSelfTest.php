@@ -11,7 +11,7 @@ use Drupal\drupflare\Health\Tripwire\ConfigDrift;
  * observed false at least once, and serving with any of them false produces plausible wrong output
  * rather than an error -- which is exactly the class of failure this project keeps paying for.
  *
- * It runs BEFORE serving on purpose: a site that cannot pass these should quarantine rather than
+ * It runs BEFORE serving: a site that cannot pass these should quarantine rather than
  * answer, because a 503 with Retry-After is a better answer than a page rendered against a quarter
  * of its own database.
  */

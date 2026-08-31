@@ -139,7 +139,7 @@ use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Request;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 
-// CurlShim's exec() path genuinely needs Guzzle's PSR-7, which is a composer dependency rather
+// CurlShim's exec() path needs Guzzle's PSR-7, which is a composer dependency rather
 // than a Drupal one, so the shim section is the one part of this suite that reads vendor/.
 // Two candidates because this file exists in two places: the module repo has its own vendor/,
 // and the worker's packed copy sits beside a full Drupal tree instead.
@@ -157,7 +157,7 @@ $hasPsr7 = class_exists('GuzzleHttp\\Psr7\\Request');
 /**
  * Whether a callable refused, which is the only correct outcome for a shim that cannot serve.
  *
- * Declared BELOW the `use` block on purpose: a `use` alias applies only from its own line on, so
+ * Declared BELOW the `use` block: a `use` alias applies only from its own line on, so
  * a `catch (ShimRefusal)` written above it silently resolves to a non-existent global class and
  * catches nothing. That cost one debugging round here.
  *
@@ -229,7 +229,7 @@ $anon = [
 	'uid' => 0,
 	'cache_contexts' => ['url'],
 ];
-ok('silent on a genuinely anonymous write', $w->check($anon) === null);
+ok('silent on an anonymous write', $w->check($anon) === null);
 ok('silent when not writing the page cache at all', $w->check(['uid' => 1]) === null);
 
 echo "\n# cache.header_missing -- RULE 3 as an assertion\n";
@@ -266,7 +266,7 @@ ok(
 	str_contains($w->check(['param_count' => 574])->context, '574'),
 );
 
-echo "\n# sql.like_over_50 -- on the TRANSLATED pattern, which is the point\n";
+echo "\n# sql.like_over_50 -- on the TRANSLATED pattern\n";
 $w = new SqlLikeOver50();
 ok('silent at exactly 50 bytes', $w->check(['translated_pattern' => str_repeat('a', 50)]) === null);
 ok('fires at 51 bytes', $w->check(['translated_pattern' => str_repeat('a', 51)]) !== null);
@@ -329,7 +329,7 @@ $sick = $reg->run([
 	'switcher_depth' => 2,
 	'param_count' => 700,
 ]);
-ok('finds four on a genuinely sick observation', count($sick) === 4, (string) count($sick));
+ok('finds four on a sick observation', count($sick) === 4, (string) count($sick));
 ok(
 	'finds nothing on a healthy one',
 	$reg->run([
@@ -764,7 +764,7 @@ if (!$hasPsr7) {
 	echo "  skip guzzlehttp/psr7 not on the include path; exec() assertions need a real request\n";
 } else {
 	// no vrzno here, so Host::call refuses and CfwDeferredHttp answers 503 x-cfw-deferred: failed.
-	// That is the real path, not a mock: the point is that a caller can TELL.
+	// That is the real path, not a mock, so a caller can TELL.
 	$live = $curl->init('https://example.invalid/g');
 	$curl->setopt($live, 19913, 1);
 	$body = $curl->exec($live);
@@ -1111,7 +1111,7 @@ class BrokenAccount
 	 * Always throws, which is what resetIdentity() has to survive.
 	 *
 	 * @throws RuntimeException
-	 *   Always; the throw is the whole point of this stub.
+	 *   Always; the throw is what this stub exists for.
 	 */
 	public function id(): never
 	{
@@ -1475,7 +1475,7 @@ ok(
 	drupal_static('cfw_leak_probe') === null,
 );
 
-// verify() reads the SAME global container the rest of the request reads, on purpose: injecting
+// verify() reads the SAME global container the rest of the request reads: injecting
 // the service would observe a different object and pass while the bug remained
 Drupal::setContainer(
 	resetter_container(['current_user' => new AccountProxy(new EventDispatcher())]),
@@ -1491,7 +1491,7 @@ ok(
 	$verified['current_uid'] === 'ERR',
 );
 // #endregion
-// #region the host bridge, installed HERE and deliberately not at file scope
+// #region the host bridge, installed HERE and not at file scope
 //
 // Every assertion ABOVE this line measures a capability in its ABSENT state, which is the control
 // the runtime cannot provide. A vrzno_env() hoisted to the top of the file would silently turn
@@ -2210,7 +2210,7 @@ ok(
 	$other->getName() === 'Durable public files',
 );
 
-// LOCAL is deliberately not set: it promises realpath() returns a usable filesystem path
+// LOCAL is not set: it promises realpath() returns a usable filesystem path
 ok(
 	'the type is NORMAL, not LOCAL',
 	CfwFileStreamWrapper::getType() === StreamWrapperInterface::NORMAL,
@@ -2302,7 +2302,7 @@ function install_logger(): LoggerChannelSpy
 
 $mail = new CfwMail();
 
-// format() is core's behaviour on purpose: converting HTML to text and wrapping lines is
+// format() is core's behaviour: converting HTML to text and wrapping lines is
 // Drupal's business, not the transport's
 $formatted = $mail->format(['body' => ['first', 'second'], 'params' => []]);
 ok('format() joins the body parts', str_contains($formatted['body'], "first\n\nsecond"));
@@ -4024,7 +4024,7 @@ ok('it names the caller, so the gap is traceable to code', $entry['caller'] !== 
 // blocked is the default because an unknown state must never read as a weaker claim than it is
 ok('and defaults to blocked rather than to something softer', $entry['state'] === 'blocked');
 
-// ONCE PER BOOT is the whole point: a degraded function inside a render loop would otherwise
+// ONCE PER BOOT: a degraded function inside a render loop would otherwise
 // write thousands of identical watchdog rows and spend the meter that binds regeneration
 Degradation::record('sodium_crypto_generichash', 'a different reason entirely');
 ok('a second record for the same capability does not add a row', count(Degradation::all()) === 1);
@@ -4041,7 +4041,7 @@ ok(
 	Degradation::all()['cfw_probe_untested']['state'] === 'untested',
 );
 
-// the module table's vocabulary, deliberately, and `supported` is absent from both for the same
+// the module table's vocabulary, and `supported` is absent from both for the same
 // reason: it meant "measured WITHOUT the thing that needs it" and read as a promise
 Degradation::record('cfw_probe_bogus', 'an unknown state must not soften the claim', 'supported');
 ok(

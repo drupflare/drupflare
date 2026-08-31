@@ -22,15 +22,15 @@ use Psr\Http\Message\RequestInterface;
  * That matters because a synchronous outbound fetch needs JSPI to suspend the
  * interpreter, and this build has no suspension mechanism. Deferring needs none: the
  * request is handed to a queue and the caller gets an immediate 202. So the common
- * case works TODAY, and JSPI becomes an optimisation for the genuinely synchronous
+ * case works TODAY, and JSPI becomes an optimisation for the strictly synchronous
  * remainder rather than a precondition for outbound HTTP at all.
  *
- * Layering, deliberately in this order:
+ * Layering, in this order:
  *   - cached   -> a previous fetch's response, no suspension
  *   - deferred -> queued, 202, no suspension          <- this class
  *   - sync     -> JSPI suspend, when a build has it
  *
- * A caller that genuinely cannot proceed without a body gets a 202 and must handle
+ * A caller that cannot proceed without a body gets a 202 and must handle
  * it. That is a real behaviour change from a blocking client, and it is why this is
  * a handler a site opts into per service rather than a global default.
  */

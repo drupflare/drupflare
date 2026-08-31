@@ -279,9 +279,9 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 	 * gets tagged `drupflare.reset` and implements `reset()`.
 	 *
 	 * The seed list below is the services whose state is known to be per-request
-	 * and per-user. It is deliberately explicit rather than "everything with a
-	 * reset() method", because resetting the wrong service mid-boot is its own
-	 * failure mode.
+	 * and per-user. It is explicit rather than "everything with a reset()
+	 * method", because resetting the wrong service mid-boot is its own failure
+	 * mode.
 	 */
 	private function registerResetter(ContainerBuilder $container): void
 	{

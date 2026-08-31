@@ -163,7 +163,7 @@ final class CryptoShim
 	/**
 	 * Random_bytes().
 	 *
-	 * The one function with a genuinely correct in-wasm fallback: `/dev/urandom` is present in MEMFS
+	 * The one function with a correct in-wasm fallback: `/dev/urandom` is present in MEMFS
 	 * and PHP's own `random_bytes()` reads it. That is why this prefers the host but does not refuse
 	 * without it -- and why dropping that file descriptor across a heap restore throws
 	 * `RandomException` rather than quietly returning predictable bytes.

@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Drupal\Core\Form {
 	/**
-	 * A FormState with the static renamed, which is the whole point of this fixture.
+	 * A FormState with the static renamed, which is what this fixture supplies.
 	 */
 	class FormState
 	{
 		/**
-		 * Deliberately NOT called `anyErrors`.
+		 * NOT called `anyErrors`.
 		 *
 		 * @var bool
 		 */

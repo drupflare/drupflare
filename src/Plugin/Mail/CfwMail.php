@@ -30,8 +30,8 @@ use Throwable;
  * a failure after the hand-off is reported on the Worker's own diagnostics rather
  * than here.
  *
- * The format() half is unchanged from core's behaviour on purpose: converting HTML
- * to text and wrapping lines is Drupal's business, not the transport's.
+ * The format() half is unchanged from core's behaviour: converting HTML to text
+ * and wrapping lines is Drupal's business, not the transport's.
  */
 #[Mail(id: 'cfw_mail', label: new TranslatableMarkup('Cloudflare Email Service'))]
 class CfwMail implements MailInterface
@@ -123,7 +123,7 @@ class CfwMail implements MailInterface
 	private static function smtpSettings(): array
 	{
 		try {
-			// `getEditable` is deliberately not used: this is a read, and the config may not exist
+			// `getEditable` is not used: this is a read, and the config may not exist
 			// at all, which `get()` answers with nulls rather than by throwing
 			$config = Drupal::config('smtp.settings');
 			$host = (string) ($config->get('smtp_host') ?? '');

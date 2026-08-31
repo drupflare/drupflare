@@ -96,8 +96,8 @@ class CfwLogger implements LoggerInterface
 		try {
 			$emit($json);
 		} catch (Throwable $e) {
-			// a logger that throws turns a warning into an outage; swallow deliberately, but say so
-			// once -- a sink that is present and failing hides every degradation behind it
+			// a logger that throws turns a warning into an outage; swallow it, but say so once --
+			// a sink that is present and failing hides every degradation behind it
 			Degradation::record(
 				'log sink',
 				'the host log sink threw while accepting a line: ' . $e->getMessage(),

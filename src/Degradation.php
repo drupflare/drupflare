@@ -26,7 +26,7 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
  *   3. it surfaces a status-report row, in the `verified`/`untested`/`blocked` vocabulary the
  *      module table already uses, so an operator sees it without reading a log.
  *
- * ONCE PER BOOT, not once per call, and the distinction is the point. A degraded function reached
+ * ONCE PER BOOT, not once per call. A degraded function reached
  * inside a render loop would otherwise write thousands of identical rows into `watchdog` and spend
  * the meter that binds regeneration -- turning a diagnostic into an outage.
  */
@@ -35,7 +35,7 @@ final class Degradation
 	/**
 	 * The three states a capability may be in.
 	 *
-	 * Deliberately the module table's words rather than new ones. `supported` is absent here for
+	 * The module table's words rather than new ones. `supported` is absent here for
 	 * the same reason it is absent there: it meant "the capability was measured WITHOUT the thing
 	 * that needs it", which is an inference about the runtime that reads as a promise about the
 	 * feature.
@@ -80,8 +80,8 @@ final class Degradation
 		// the logger, and a declaration that fataled would be worse than the gap it describes
 		try {
 			Host::call('cfwLog', [
-				// both, deliberately: `phpLogPasses()` prefers the number and falls back to the
-				// name, so sending each makes the ceiling filter independent of the lookup table
+				// both: `phpLogPasses()` prefers the number and falls back to the name, so sending
+				// each makes the ceiling filter independent of the lookup table
 				'level' => 'warn',
 				'severity' => 4,
 				'channel' => 'drupflare',
@@ -94,7 +94,7 @@ final class Degradation
 				),
 			]);
 		} catch (\Throwable) {
-			// deliberately swallowed; the status-report row below is the durable record
+			// swallowed; the status-report row below is the durable record
 		}
 	}
 

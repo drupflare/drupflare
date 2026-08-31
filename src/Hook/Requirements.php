@@ -174,7 +174,7 @@ final class Requirements
 	 * `hook_requirements_alter()` is the seam Drupal provides for exactly this, so the fix stays
 	 * host-side and the modules are unmodified. Every row here is REPLACED rather than removed, and
 	 * one that reports a real loss keeps a warning: an operator reading the status report has to be
-	 * able to tell what this platform supplies from what it genuinely cannot.
+	 * able to tell what this platform supplies from what it cannot.
 	 *
 	 * @param array $requirements
 	 *   Every requirement Drupal collected, by key.
@@ -272,13 +272,13 @@ final class Requirements
 			];
 		}
 
-		// opcache is compiled in and deliberately DISABLED, which is why this row is honest and only
+		// opcache is compiled in and DISABLED, which is why this row reports it and only
 		// its reason is missing: measured on this interpreter it bought no render time and cost
 		// ~37 MiB of the 128 MiB an isolate gets
 		if (isset($requirements['php_opcache']) && extension_loaded('Zend OPcache')) {
 			$requirements['php_opcache'] = [
 				'title' => new TranslatableMarkup('PHP OPcode caching'),
-				'value' => new TranslatableMarkup('Disabled deliberately'),
+				'value' => new TranslatableMarkup('Disabled by configuration'),
 				'description' => new TranslatableMarkup(
 					'OPcache is compiled into this interpreter and switched off. Measured here it changed render time by about a millisecond and cost roughly 37 MiB of the 128 MiB this isolate has, which is memory the site needs to render at all.',
 				),

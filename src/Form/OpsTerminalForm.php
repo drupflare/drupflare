@@ -136,8 +136,8 @@ final class OpsTerminalForm extends FormBase
 		$form_state->setRebuild(true);
 
 		if (($parsed['ok'] ?? false) !== true) {
-			// a REFUSAL and an unknown command read differently on purpose: one says "this platform
-			// does not do that and here is why", the other says "check your spelling"
+			// a REFUSAL and an unknown command read differently: one says "this platform does not
+			// do that and here is why", the other says "check your spelling"
 			$this->messenger()->addWarning((string) $parsed['error']);
 			return;
 		}
