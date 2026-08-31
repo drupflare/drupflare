@@ -32,7 +32,7 @@ PHP **8.3 or newer**, matrixed across 8.3, 8.4 and 8.5 in `build.yml`, matching 
 assertions pass with no deprecation notices, and `src/` carries no implicit nullable parameters or
 dynamic properties.
 
-The class-loading job stays pinned to **8.3** rather than matrixed, and that is deliberate: it
+The class-loading job stays pinned to **8.3** rather than matrixed: it
 downloads a Drupal tree per run, and what it proves is a DRUPAL version boundary, not a PHP one.
 Pinning it to the floor of the supported range is the cheapest way to keep proving the floor works.
 (The pin carries no inline comment because workflow files take none.)
