@@ -184,6 +184,14 @@ final class RequestResetter
 		Html::resetSeenIds();
 		$log['html_seen_ids_reset'] = true;
 
+		// The same class one static over, and resetSeenIds() does not touch it.
+		// AjaxResponseSubscriber sets it true on an ajax request and nothing sets it back, so on a
+		// persistent interpreter the first ajax request sends Html::getUniqueId() down its
+		// randomBytesBase64 branch for every later render -- ids that differ on every request, on
+		// pages that are meant to be byte-reproducible.
+		Html::setIsAjax(false);
+		$log['html_is_ajax_reset'] = true;
+
 		$log['form_errors_reset'] = $this->clearFormErrors();
 		$log['render_contexts_dropped'] = $this->clearRenderContexts();
 		$log['views_page_render_array_cleared'] = $this->clearViewsPageRenderArray();

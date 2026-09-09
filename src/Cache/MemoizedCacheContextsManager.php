@@ -14,12 +14,12 @@ use Drupal\Core\Cache\Context\ContextCacheKeys;
  * `getService($id)->getContext($parameter)` once per surviving token and merges cacheable metadata
  * for the ones optimised away - and nothing remembers that it just did exactly that.
  *
- * Measured on a steady-state front-page render, native, n=4 with zero spread
- * (scripts/bench/bench-context-memo.php): 51 convert calls over 13 distinct token lists, so
- * 38 of them - 74.5% - repeat a list already answered in the same request. Zero token lists
- * produced two different answers, which is what makes the memo sound rather than merely cheap.
- * `optimizeTokens()` is called 62 times over the same 13 lists and 51 of those are nested inside
- * convert, so the memo removes that work too.
+ * Measured on a steady-state front-page render, native, n=4 with zero spread; the harness that
+ * produced it is not in this repository, so the figure is not re-derivable here. 51 convert calls
+ * over 13 distinct token lists, so 38 of them - 74.5% - repeat a list already answered in the same
+ * request. Zero token lists produced two different answers, which is what makes the memo sound
+ * rather than merely cheap. `optimizeTokens()` is called 62 times over the same 13 lists and 51 of
+ * those are nested inside convert, so the memo removes that work too.
  *
  * THE GENERATION IS NOT JUST THE REQUEST. A context value can change without the request
  * changing: AccountSwitcher swaps the current user mid-request, and `user.permissions`,

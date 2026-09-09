@@ -10,6 +10,7 @@ use Drupal\drupflare\Cache\CfwCacheBackendFactory;
 use Drupal\drupflare\Cache\MemoizedCacheContextsManager;
 use Drupal\drupflare\Http\CachedFetchHandler;
 use Drupal\drupflare\Http\FetchHandler;
+use Drupal\drupflare\Http\ParkFetchHandler;
 use Drupal\Core\Cache\Context\CacheContextsManager;
 use Drupal\Core\Cache\DatabaseBackendFactory;
 use Drupal\Core\Lock\DatabaseLockBackend;
@@ -73,9 +74,13 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 		// "An error was encountered while creating the response" -- with the body
 		// already fetched. CachedFetchHandler reads the same host capability the
 		// wrapper does and builds the response itself.
-		$handler = new Definition(
-			self::runtimeCanSuspend() ? FetchHandler::class : CachedFetchHandler::class,
-		);
+		// THREE TRANSPORTS, hardest requirement first. `FetchHandler` awaits the host and needs
+		// Asyncify or JSPI. `ParkFetchHandler` suspends the PHP call itself through `ext/cfwpark`,
+		// which this build has and which answers INSIDE the request -- the only one of the three that
+		// can complete an authorization-code exchange, because the code is single use and a deferred
+		// answer arrives at a request that can no longer spend it. `CachedFetchHandler` is the
+		// fallback and is correct for anything retryable.
+		$handler = new Definition(self::pickHandlerClass());
 		$handler->setPublic(false);
 		$container->setDefinition('drupflare.fetch_handler', $handler);
 
@@ -243,6 +248,24 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 	}
 
 	/**
+	 * Which transport this runtime gets.
+	 *
+	 * Ordered by what each can do rather than by preference, and every branch is a RUNTIME question:
+	 * the same module code ships to a build with Asyncify, a build with the park, and a build with
+	 * neither, and picks a different transport on each.
+	 */
+	private static function pickHandlerClass(): string
+	{
+		if (self::runtimeCanSuspend()) {
+			return FetchHandler::class;
+		}
+		if (ParkFetchHandler::available()) {
+			return ParkFetchHandler::class;
+		}
+		return CachedFetchHandler::class;
+	}
+
+	/**
 	 * Whether the interpreter can suspend, which is what FetchHandler requires.
 	 *
 	 * `vrzno_await()` is compiled against Asyncify. The shipping build sets
@@ -303,6 +326,15 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 			'theme.manager',
 			// node grants, which are the classic Drupal leak
 			'node.grant_storage',
+			// State is a CacheCollector over cache.bootstrap, so a value the HOST wrote straight into
+			// key_value is invisible for the life of the incarnation. Measured: the cron chain
+			// stamped `system.cron_last` and the status report kept saying cron had not run
+			'state',
+			// AND THE ONE THAT DROPS AN INVALIDATION. CacheTagsChecksumTrait memoises every tag it
+			// has already invalidated and skips it on a second pass, which is right for one process
+			// per request and wrong here: measured, 48 tags sat memoised across a whole incarnation,
+			// so a second menu-item save wrote no `config:system.menu.main` row and purged nothing
+			'cache_tags.invalidator.checksum',
 		];
 
 		$resettable = [];

@@ -12,12 +12,16 @@ use Throwable;
  * The single seam between PHP and the Worker runtime.
  *
  * Every capability in this module goes through here rather than reaching for
- * vrzno_env() itself, for two reasons. The bridge is 32-bit (PHP_INT_SIZE 4) so
- * anything above 2^31 has to cross as a codec envelope or a string, and a
- * capability that forgets is a silent corruption rather than an error. And a host
- * function may simply be absent -- a Worker deployed without an email binding has
- * no cfwMail -- so "is this capability available" has exactly one answer, here,
- * instead of one per plugin.
+ * vrzno_env() itself, for two reasons. The bridge carries JSON and a JSON number
+ * is a double, so anything above 2^53 has to cross as a codec envelope or a
+ * string, and a capability that forgets is a silent corruption rather than an
+ * error. And a host function may simply be absent -- a Worker deployed without an
+ * email binding has no cfwMail -- so "is this capability available" has exactly
+ * one answer, here, instead of one per plugin.
+ *
+ * The limit used to be 2^31 because the interpreter was built wasm32 with
+ * PHP_INT_SIZE 4. It is 8 on the long64 build; the codec still applies because
+ * the ceiling moved rather than went away.
  *
  * @see CfwMail
  * @see HttpsStreamWrapper
@@ -50,6 +54,36 @@ final class Host
 	public static function has(string $name): bool
 	{
 		return self::fn($name) !== null;
+	}
+
+	/**
+	 * A boolean the runtime set on the Module, rather than a callable it installed.
+	 *
+	 * {@see has()} cannot answer this: it goes through {@see fn()}, which only accepts an object or a
+	 * callable, so a plain `true` reads as absent. The host uses a flag rather than a function where
+	 * the answer is a property of the deployment and there is nothing to call -- `cfwParkFetch` says
+	 * the Worker installed the loop that answers a parked request.
+	 *
+	 * @param string $name
+	 *   The Module key.
+	 *
+	 * @return bool
+	 *   TRUE only when the runtime set the flag to boolean true.
+	 */
+	public static function flag(string $name): bool
+	{
+		if (!function_exists('vrzno_env')) {
+			return false;
+		}
+		return vrzno_env($name) === true;
+	}
+
+	/**
+	 * Whether the host answers a parked outbound request.
+	 */
+	public static function hasParkFetch(): bool
+	{
+		return self::flag('cfwParkFetch');
 	}
 
 	/**
