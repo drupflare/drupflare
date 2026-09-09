@@ -117,24 +117,32 @@ final class ShimRegistry
 			// #endregion
 			// #region refused, and this half is the important half
 			'openssl_pkey_new' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
 				'why' =>
-					'Keypair generation needs a real OpenSSL; crypto.subtle can generate a key but cannot hand out the PEM this returns.',
-				'alternative' => 'a key minted outside the Worker and read from a secret binding',
+					'generateKeyPairSync() is synchronous in workerd and returns the PEM directly; the earlier refusal said crypto.subtle could not hand out a PEM, which was true of the wrong API.',
+				'alternative' => '',
 			],
 			'openssl_pkey_export' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
 				'why' =>
-					'There is no private key object here to export, because none can be generated.',
-				'alternative' => 'a key minted outside the Worker and read from a secret binding',
+					'createPrivateKey()->export(); a passphrase is refused rather than ignored, because answering with an unencrypted key to a caller who asked for an encrypted one hands them a secret they believe is protected.',
+				'alternative' => '',
+			],
+			'openssl_pkey_get_public' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' =>
+					'createPublicKey() takes a PEM, a certificate or a JWK and exports SPKI PEM, which is what openssl_verify() accepts. This is the step every OIDC library needs between a key set and a verification.',
+				'alternative' => '',
 			],
 			'openssl_csr_new' => [
 				'verdict' => self::REFUSE,
 				'via' => '',
-				'why' => 'A CSR needs a private key this runtime cannot produce.',
-				'alternative' => 'a key minted outside the Worker and read from a secret binding',
+				'why' =>
+					'node:crypto has no certificate-request primitive at all, so this is absent rather than unimplemented. It is the only one of the four that has nothing behind it.',
+				'alternative' => 'a CSR produced outside the Worker',
 			],
 			'openssl_sign' => [
 				'verdict' => self::ROUTE,
@@ -151,11 +159,17 @@ final class ShimRegistry
 				'alternative' => '',
 			],
 			'openssl_private_encrypt' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
 				'why' =>
-					'Only signing and verification are bridged; raw private-key encryption has no caller and an unused surface is worse than an absent one.',
-				'alternative' => 'openssl_sign() when the goal is authenticity rather than secrecy',
+					'privateEncrypt(), measured returning 256 bytes synchronously. Paired with openssl_public_decrypt(), which is the shape a legacy licence check or an older SSO handshake uses.',
+				'alternative' => '',
+			],
+			'openssl_public_decrypt' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' => 'publicDecrypt(), the other half of openssl_private_encrypt().',
+				'alternative' => '',
 			],
 			'imagecreatetruecolor' => [
 				'verdict' => self::REFUSE,

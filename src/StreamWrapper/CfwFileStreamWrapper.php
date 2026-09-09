@@ -46,6 +46,15 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	public const SCHEMES = ['public', 'private'];
 
 	/**
+	 * Above this many bytes a read goes chunk by chunk rather than in one crossing.
+	 *
+	 * One `FILE_CHUNK_BYTES` chunk is 200,000, so this is four of them. Below it the extra
+	 * crossings cost more than the copies they save; above it the base64 reply and its decoded copy
+	 * are both live at once, which is what put a 20 MB download at ~66.7 MB of a 128 MB isolate.
+	 */
+	public const CHUNKED_READ_ABOVE = 800000;
+
+	/**
 	 * The scheme this instance was tagged for, set by the service definition.
 	 *
 	 * One class serves both `public` and `private` because the storage is identical; only the
@@ -142,22 +151,49 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 		$this->writable = $base !== 'r' || $plus;
 
 		if ($base === 'r' || $plus || $base === 'a') {
-			$reply = Host::call('cfwFileRead', ['uri' => $path]);
-			$found = ($reply['ok'] ?? false) === true;
-			if (!$found && $base === 'r') {
-				// 'r' on an absent file is a failure; 'a' and 'w' create it
-				return $this->fail($options, sprintf('%s does not exist', $path));
-			}
-			if ($found) {
-				// an ABSENT b64 field is a malformed reply, not an empty file: defaulting it would
-				// make a broken host indistinguishable from an empty upload
-				if (!array_key_exists('b64', $reply)) {
-					return $this->fail(
-						$options,
-						sprintf('read reply for %s carried no b64', $path),
-					);
+			// CHUNK BY CHUNK ABOVE A THRESHOLD, and the isolate is why. `cfwFileRead` answers with
+			// the whole file base64-encoded, so a 20 MB download crossed as ~26.7 MB of base64,
+			// decoded to another 20 MB of PHP string, and the reply string was still live: about
+			// 66.7 MB of a 128 MB isolate for one file. `getFileChunk` was exposed by the host and
+			// reached by no PHP caller at all.
+			//
+			// The peak is still one whole file, because a stream wrapper has to answer
+			// stream_read() from somewhere -- what this removes is the two extra copies.
+			$stat = Host::call('cfwFileStat', ['uri' => $path]);
+			$size = ($stat['ok'] ?? false) === true ? (int) ($stat['size'] ?? 0) : -1;
+			$chunks = ($stat['ok'] ?? false) === true ? (int) ($stat['chunks'] ?? 0) : 0;
+
+			if ($size >= self::CHUNKED_READ_ABOVE && $chunks > 0) {
+				$assembled = '';
+				for ($seq = 0; $seq < $chunks; $seq++) {
+					$part = Host::call('cfwFileRead', ['uri' => $path, 'seq' => $seq]);
+					if (($part['ok'] ?? false) !== true || !array_key_exists('b64', $part)) {
+						return $this->fail(
+							$options,
+							sprintf('chunk %d of %s could not be read', $seq, $path),
+						);
+					}
+					$assembled .= (string) base64_decode((string) $part['b64'], true);
 				}
-				$this->buffer = (string) base64_decode((string) $reply['b64'], true);
+				$this->buffer = $assembled;
+			} else {
+				$reply = Host::call('cfwFileRead', ['uri' => $path]);
+				$found = ($reply['ok'] ?? false) === true;
+				if (!$found && $base === 'r') {
+					// 'r' on an absent file is a failure; 'a' and 'w' create it
+					return $this->fail($options, sprintf('%s does not exist', $path));
+				}
+				if ($found) {
+					// an ABSENT b64 field is a malformed reply, not an empty file: defaulting it
+					// would make a broken host indistinguishable from an empty upload
+					if (!array_key_exists('b64', $reply)) {
+						return $this->fail(
+							$options,
+							sprintf('read reply for %s carried no b64', $path),
+						);
+					}
+					$this->buffer = (string) base64_decode((string) $reply['b64'], true);
+				}
 			}
 		}
 
@@ -559,8 +595,59 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	 */
 	public function getExternalUrl(): string
 	{
-		$base = $this->scheme === 'private' ? '/system/files/' : '/sites/default/files/';
-		return $base . self::targetOf($this->uri);
+		$target = self::targetOf($this->uri);
+		// A MIRRORED PUBLIC FILE IS LINKED OFF THE WORKER, which is the only structural serving
+		// lever there is. A zone Cache Rule cannot save an invocation -- the Worker runs before the
+		// cache is consulted -- so exactly two paths cost zero Worker requests: a static asset, and
+		// a hostname that is not routed to the Worker. Worker requests at 100,000/day are what bind
+		// serving, so an image-heavy page spending one per image is the meter counting files rather
+		// than visitors.
+		//
+		// NOT for `private://`, ever: an R2 custom domain is public by definition, and a private
+		// file is authorised by Drupal per request. And not for a file that has not mirrored yet,
+		// because the alternative to a Worker URL there is a 404 on a file the site holds.
+		if ($this->scheme !== 'private') {
+			$base = self::publicBase();
+			if ($base !== '' && self::isMirrored($this->uri)) {
+				return $base . '/' . ltrim($target, '/');
+			}
+		}
+		$prefix = $this->scheme === 'private' ? '/system/files/' : '/sites/default/files/';
+		return $prefix . $target;
+	}
+
+	/**
+	 * The configured public origin, memoised per request.
+	 *
+	 * One crossing for a value that cannot change under a render; a page with forty images would
+	 * otherwise ask forty times for the same string.
+	 *
+	 * @return string
+	 *   The origin with no trailing slash, or '' when files are served through the Worker.
+	 */
+	private static function publicBase(): string
+	{
+		static $base = null;
+		if ($base === null) {
+			$reply = Host::call('cfwFilePublicBase', []);
+			$base = ($reply['ok'] ?? false) === true ? (string) ($reply['base'] ?? '') : '';
+		}
+		return $base;
+	}
+
+	/**
+	 * Whether the object believes this file is already in the bucket.
+	 *
+	 * @param string $uri
+	 *   The file URI.
+	 *
+	 * @return bool
+	 *   TRUE when the mirror has landed.
+	 */
+	private static function isMirrored(string $uri): bool
+	{
+		$stat = Host::call('cfwFileStat', ['uri' => $uri]);
+		return ($stat['ok'] ?? false) === true && ($stat['mirrored'] ?? false) == true;
 	}
 
 	/**

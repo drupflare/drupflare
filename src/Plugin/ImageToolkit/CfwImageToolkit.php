@@ -231,7 +231,19 @@ class CfwImageToolkit extends ImageToolkitBase
 	 */
 	public static function getSupportedExtensions()
 	{
-		return ['png', 'jpe', 'jpeg', 'jpg', 'gif', 'webp', 'avif'];
+		// AVIF IS CLAIMED ONLY WHEN THE ENGINE ENCODES IT, and the honesty is load-bearing. All
+		// four shipped image styles are image_scale + image_convert_avif, and
+		// AvifImageEffect::applyEffect() calls isAvifSupported() first and falls through to its
+		// parent when the toolkit says no -- the shipped fallback extension is webp, which the
+		// wasm engine does encode. So core degrades on its own with no configuration change.
+		// Claim avif while the engine cannot produce it and the effect calls convert('avif'), gets
+		// FALSE, and logs a failed derivative instead of falling back.
+		$base = ['png', 'jpe', 'jpeg', 'jpg', 'gif', 'webp'];
+		$reply = Host::call('cfwImageUrl', [
+			'uri' => 'public://cfw-capability-probe.png',
+			'transform' => ['width' => 1],
+		]);
+		return ($reply['engine'] ?? '') === 'images' ? array_merge($base, ['avif']) : $base;
 	}
 
 	/**
