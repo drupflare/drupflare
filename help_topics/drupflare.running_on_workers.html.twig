@@ -1,0 +1,30 @@
+---
+label: 'Running Drupal on Cloudflare Workers'
+top_level: true
+related:
+  - core.cron
+  - core.security
+---
+<h2>{% trans %}Goal{% endtrans %}</h2>
+<p>{% trans %}Understand what changes when Drupal is served from a Cloudflare Worker instead of a web server, and where to look when something behaves differently from a normal host.{% endtrans %}</p>
+
+<h2>{% trans %}What it takes{% endtrans %}</h2>
+<dl>
+  <dt>{% trans %}The interpreter{% endtrans %}</dt>
+  <dd>{% trans %}PHP is compiled to WebAssembly and runs inside a Durable Object. There is no shell, no process table and no local filesystem that survives a request. Files live in the object database and are reached through a stream wrapper.{% endtrans %}</dd>
+
+  <dt>{% trans %}Outbound requests{% endtrans %}</dt>
+  <dd>{% trans %}A Worker cannot open a connection and wait for the reply inside the same invocation. A request whose answer is already in the fetch cache is served immediately. Anything else is queued and fetched between invocations, so the caller sees the answer on a later request rather than on this one. Update checks, the announcements feed and security advisories all work this way, and each converges over a few cron rounds rather than in one.{% endtrans %}</dd>
+
+  <dt>{% trans %}Cron{% endtrans %}</dt>
+  <dd>{% trans %}A full cron run is too expensive for one invocation, so it is decomposed into units and driven from an alarm, one unit per firing. The status page reports which unit ran last and when.{% endtrans %}</dd>
+
+  <dt>{% trans %}Caching{% endtrans %}</dt>
+  <dd>{% trans %}A rendered page is stored in front of Drupal so the next visitor is answered without booting the interpreter. Saving content invalidates what depends on it and the affected pages are re-rendered in the background.{% endtrans %}</dd>
+
+  <dt>{% trans %}Mail{% endtrans %}</dt>
+  <dd>{% trans %}Mail is committed during the request and sent between invocations, over a relay configured on the Worker. Port 25 is not reachable from the platform; submission ports are.{% endtrans %}</dd>
+</dl>
+
+<h2>{% trans %}Where to look{% endtrans %}</h2>
+<p>{% trans %}Runtime Status reports the daily meters, the read replica pool, the page tiers and the outbound queues. The Operations Terminal runs the operations this runtime has, using the Drush spellings an operator already knows.{% endtrans %}</p>

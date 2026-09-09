@@ -4,21 +4,26 @@ The Drupal 11 module that bridges Drupal to Cloudflare Workers bindings: mail, o
 queues, logging, a `https://` stream wrapper, request isolation, and a health/self-repair layer.
 Published as `drupflare/drupflare`; consumed by `drupflare/worker`.
 
-## This module exists TWICE and the second copy is what executes
+## This repo is the source and the pack is what executes
 
-`drupflare/worker` keeps its own copy under `drupal/drupflare/`, because **Composer never runs on
-the edge**. The worker packs that copy into `assets/driver.json`, which the Durable Object mounts into
-its in-memory filesystem. So:
+**Composer never runs on the edge**, so `drupflare/worker` packs this checkout into
+`assets/driver.json`, which the Durable Object mounts into its in-memory filesystem.
+`worker/scripts/gen-driver-assets.ts` reads `../drupflare` directly, under an allow-list of parts
+(`src`, `.info.yml`, `.install`, `.module`, `.services.yml`) so a checkout's `vendor/` and
+`node_modules/` stay out of the bundle. `DRUPFLARE_SRC` relocates it, which is how CI points at
+`.siblings/`. So:
 
-- **This repo's suite is the authority on behaviour.** `php tests/health-suite.php` - **553**
-  assertions, plus `DRUPAL_ROOT=<worker>/drupal-src php tests/load-classes.php` - **94**.
+- **This repo's suite is the authority on behaviour.** `php tests/health-suite.php` - **667**
+  assertions, plus `DRUPAL_ROOT=<worker>/drupal-src php tests/load-classes.php` - **104**.
   Re-measure before quoting either; both have been stale here in both directions.
-- A fix made only in the worker ships **untested**; a fix made only here **never reaches the edge**.
-- **There is no `check:sync` in the worker any more.** It and `scripts/check-module-sync.ts` were
-  deleted, so nothing compares this repo's files to the copy under `worker/drupal/drupflare/`. What
-  survives is `worker/tests/node/driver-pack.spec.ts`, which asserts `assets/driver.json` matches
-  that copy byte for byte. Run the worker's `bun run assets:driver` after any change here, or the
-  packed copy goes stale - it has done so twice.
+- **Run the worker's `bun run assets:driver` after any change here**, or the packed copy goes stale -
+  it has done so twice. `worker/tests/node/driver-pack.spec.ts` asserts `assets/driver.json` matches
+  this repo's files on disk byte for byte, so a stale pack fails the worker's gate.
+- **The worker's third copy is gone**, along with the `check:sync` that policed it.
+  `worker/drupal/drupflare/` was an untracked module-shaped copy that the packer read, so the
+  shipping bytes came from a directory nothing kept in sync; `scripts/check-module-sync.ts` picked
+  "newer" by mtime and would have overwritten a fix here with the stale text. Do not go looking for
+  either.
 
 Drupal **11.3 or newer**, and that is measured rather than cautious: `CfwImageToolkit` is a
 guaranteed fatal below it, because `ImageToolkitInterface extends ContainerFactoryPluginInterface`
@@ -28,7 +33,7 @@ checkout: `php tests/load-classes.php` fatals on 11.0.0, 11.1.0 and 11.2.0 and p
 11.3.0. No 11.2.x patch backported the trait.
 
 PHP **8.3 or newer**, matrixed across 8.3, 8.4 and 8.5 in `build.yml`, matching `rom` and
-`stream-http`. Measured on 8.5.7 with `error_reporting=E_ALL`: 553 health and 94 class-loading
+`stream-http`. Measured on 8.5.7 with `error_reporting=E_ALL`: 667 health and 104 class-loading
 assertions pass with no deprecation notices, and `src/` carries no implicit nullable parameters or
 dynamic properties.
 
@@ -110,11 +115,11 @@ true is that no HOOK is that early; the include is not a hook.
 
 ## Publishing
 
-Published on Packagist as `drupflare/drupflare`, currently **v0.1.0**, so `composer require
+Published on Packagist as `drupflare/drupflare`, currently **v0.2.1**, so `composer require
 drupflare/drupflare` resolves with no repository stanza. The Packagist steps themselves are
 maintainer-only.
 
-`drupflare/stream-http: ^0.1` is a hard `require` and resolves against its published v0.1.1.
+`drupflare/stream-http: ^0.1.2` is a hard `require` and resolves against its published v0.1.2.
 
 A **local** checkout still needs a Composer path repository, and a path repository reports the branch
 rather than a tag: `^0.1` against a path repo fails with `found drupflare/drupflare[dev-main] but it

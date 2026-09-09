@@ -32,8 +32,10 @@ that go through it.
 ## 🎯 Why Bindings
 
 A Worker has no sockets, no `gd`, no SMTP transport and no writable disk worth using. PHP compiled to
-WebAssembly arrives missing what Drupal assumes, and compiling those libraries in is expensive: `gd`
-alone costs 684,821 bytes of a bundle that must fit Cloudflare's 3 MB free ceiling.
+WebAssembly arrives missing what Drupal assumes, and compiling those libraries back in costs both
+bundle and memory: `gd` alone adds 684,821 bytes, and image decoding in PHP runs inside the Durable
+Object's 128 MiB isolate. Decoding happens in the front Worker instead, through Cloudflare Images
+and `tinyimg`, where the isolate is not on the hook for it.
 
 The platform already provides all of it. Cloudflare has an email binding, `fetch()`, Cloudflare
 Images and Workers Logs. Drupal's mail system, image toolkit, HTTP transport and logger are
@@ -43,29 +45,47 @@ Images and Workers Logs. Drupal's mail system, image toolkit, HTTP transport and
 
 ## 🧩 What It Provides
 
-| Class                                | Replaces                            | Host function                                      |
-| ------------------------------------ | ----------------------------------- | -------------------------------------------------- |
-| `Host`                               | -                                   | the seam itself; every other class goes through it |
-| `Plugin\Mail\CfwMail`                | `mail()` / SMTP                     | `cfwMail`                                          |
-| `ImageToolkit\CfwImageToolkit`       | `gd`                                | `cfwImageUrl`                                      |
-| `Logger\CfwLogger`                   | `dblog` as the only sink            | `cfwLog`                                           |
-| `StreamWrapper\HttpsStreamWrapper`   | the absent `https://` wrapper       | `cfwFetch`                                         |
-| `Queue\CfwDeferredHttp`              | a blocking HTTP client              | `cfwHttpCacheGet`, `cfwQueueFetch`, `cfwFetchSync` |
-| `Http\FetchHandler`                  | curl / the stream handler           | `cfHost` (**needs JSPI, not exercised**)           |
-| `Cache\MemoizedCacheContextsManager` | recomputing an identical token list | -                                                  |
-| `DrupflareServiceProvider`           | -                                   | swaps `http_handler_stack`, builds the resetter    |
-| `RequestResetter`                    | a fresh PHP process                 | -                                                  |
-| `drupflare.module`                   | a host-side registration call       | registers `http`/`https` on every request          |
-| `Hook\Requirements`                  | -                                   | probes all of them for the status report           |
-| `Install\Requirements\Drupflare…`    | -                                   | the same probe at install time, never blocking     |
+| Class                                 | Replaces                                 | Host function                                      |
+| ------------------------------------- | ---------------------------------------- | -------------------------------------------------- |
+| `Host`                                | -                                        | the seam itself; every other class goes through it |
+| `Plugin\Mail\CfwMail`                 | `mail()` / SMTP                          | `cfwMail`                                          |
+| `Config\MailInterfaceOverride`        | a `settings.php` assignment              | -                                                  |
+| `Plugin\ImageToolkit\CfwImageToolkit` | `gd`                                     | `cfwImageUrl`                                      |
+| `Logger\CfwLogger`                    | `dblog` as the only sink                 | `cfwLog`                                           |
+| `StreamWrapper\HttpsStreamWrapper`    | the absent `https://` wrapper            | `cfwFetch`                                         |
+| `StreamWrapper\CfwFileStreamWrapper`  | MEMFS for `public://` and `private://`   | the `cfwFile*` family                              |
+| `Queue\CfwDeferredHttp`               | a blocking HTTP client                   | `cfwHttpCacheGet`, `cfwQueueFetch`, `cfwFetchSync` |
+| `Http\CachedFetchHandler`             | Guzzle's curl handler                    | the same three                                     |
+| `Http\FetchHandler`                   | curl / the stream handler                | `cfHost` (**needs JSPI, not exercised**)           |
+| `Network\CfwTcp`                      | `fsockopen()`                            | `cfwTcp`                                           |
+| `Network\CfwOidc`                     | an in-request token exchange             | `cfwOidcClaims`                                    |
+| `Shim\ShimRegistry`                   | absent `openssl_*` and `curl_*` builtins | `cfwHmac`, `cfwDigest`, `cfwRandom`                |
+| `Ops\OpsRunner`                       | Drush over a shell                       | -                                                  |
+| `Controller\StatusController`         | an admin page with nowhere to read from  | `cfwServeStats`                                    |
+| `Cache\MemoizedCacheContextsManager`  | recomputing an identical token list      | -                                                  |
+| `DrupflareServiceProvider`            | -                                        | swaps `http_handler_stack`, builds the resetter    |
+| `RequestResetter`                     | a fresh PHP process                      | -                                                  |
+| `drupflare.module`                    | a host-side registration call            | registers `http`/`https` on every request          |
+| `Hook\Requirements`                   | -                                        | probes all of them for the status report           |
+| `Install\Requirements\Drupflare…`     | -                                        | the same probe at install time, never blocking     |
+
+The health, repair and tripwire classes under `src/Health/` are documented in the host repository,
+which is what drives them.
 
 Three of these carry behaviour that differs from what they replace.
 
-**`CfwImageToolkit` never processes an image.** It records the dimensions a manipulation _would_ have
-produced so Drupal emits correct `width`/`height` attributes, and reports every operation as
-successful-but-deferred so image styles do not fail. Resizing happens at delivery, from a Cloudflare
-Images URL. A style-derived file on disk is therefore the original, so contrib that reads a
-derivative's own pixels sees full-size images. Drupal core does not.
+**`CfwImageToolkit` never processes an image itself.** It records the dimensions a manipulation
+_would_ have produced so Drupal emits correct `width`/`height` attributes, and reports every operation
+as successful-but-deferred so image styles do not fail. The pixels are produced at delivery, by a wasm
+encoder running in the Worker or by Cloudflare Images depending on which engine the deployment
+selects. A style-derived file on disk is therefore the original, so contrib that reads a derivative's
+own pixels sees full-size images. Drupal core does not.
+
+`getSupportedExtensions()` reports what the selected engine can actually encode, and that honesty
+decides whether AVIF styles work. All four shipped styles are `image_scale` plus `image_convert_avif`,
+and core's `AvifImageEffect` asks the toolkit before applying the effect, falling through to the
+style's `webp` fallback when the answer is no. Claim `avif` on an engine that cannot produce it and
+the effect logs a failed derivative instead of falling back.
 
 **`CfwDeferredHttp` answers 202 instead of a body.** Ten core files touch the HTTP client and none
 needs a synchronous response on the anonymous request path: six are cron or admin, four are oEmbed,
@@ -92,9 +112,10 @@ PHP`. `PageCache` memoizes `$this->cid` on a middleware instance that never goes
 `Host` is the only class that calls `vrzno_env()`. It centralises two things that would otherwise be
 repeated in every plugin.
 
-**The bridge is 32-bit.** `PHP_INT_SIZE` is 4 in the wasm build, so anything above 2^31 wraps
-silently rather than erroring; `Date.now()` comes back as `-397708726`. Wide values cross as a codec
-envelope or a string.
+**The bridge carries JSON, and a JSON number is a double.** `PHP_INT_SIZE` is 8 on the shipping
+build, but a value above 2^53 still comes back rounded because that is what the envelope can express.
+Wide values cross as a codec envelope or a string. The ceiling was 2^31 while the interpreter was
+built wasm32, and `Date.now()` came back as `-397708726`; the ceiling moved rather than went away.
 
 **A capability may be absent.** A Worker deployed without an email binding has no `cfwMail`, so "is
 this available" has one answer, in one place.
@@ -108,18 +129,27 @@ if (Host::has('cfwMail')) {
 }
 ```
 
-The eight names the module asks the runtime for:
+The names the module asks the runtime for, grouped by what needs them:
 
-| Name              | Direction | Needed for                                          |
-| ----------------- | --------- | --------------------------------------------------- |
-| `cfwLog`          | sync      | `CfwLogger`, and the fatal handler                  |
-| `cfwMail`         | sync      | `CfwMail`                                           |
-| `cfwImageUrl`     | sync      | `CfwImageToolkit::deliveryUrl()`                    |
-| `cfwFetch`        | sync      | `HttpsStreamWrapper::stream_open()`                 |
-| `cfwHttpCacheGet` | sync      | `CfwDeferredHttp`, the cached tier                  |
-| `cfwQueueFetch`   | sync      | `CfwDeferredHttp`, the deferred tier                |
-| `cfwFetchSync`    | sync      | `CfwDeferredHttp`, the sync tier (**absent today**) |
-| `cfHost`          | async     | `FetchHandler` (**needs JSPI**)                     |
+| Name                                                                                          | Direction | Needed for                                          |
+| --------------------------------------------------------------------------------------------- | --------- | --------------------------------------------------- |
+| `cfwLog`                                                                                      | sync      | `CfwLogger`, and the fatal handler                  |
+| `cfwMail`                                                                                     | sync      | `CfwMail`                                           |
+| `cfwImageUrl`                                                                                 | sync      | `CfwImageToolkit::deliveryUrl()`                    |
+| `cfwFetch`                                                                                    | sync      | `HttpsStreamWrapper::stream_open()`                 |
+| `cfwHttpCacheGet`                                                                             | sync      | `CfwDeferredHttp`, the cached tier                  |
+| `cfwQueueFetch`                                                                               | sync      | `CfwDeferredHttp`, the deferred tier                |
+| `cfwFetchSync`                                                                                | sync      | `CfwDeferredHttp`, the sync tier (**absent today**) |
+| `cfwFileRead`, `cfwFileWrite`, `cfwFileDelete`, `cfwFileList`, `cfwFileStat`, `cfwFileRename` | sync      | `CfwFileStreamWrapper`                              |
+| `cfwFilePublicBase`                                                                           | sync      | linking a mirrored public file off-Worker           |
+| `cfwTcp`                                                                                      | sync      | `CfwTcp`, a declared exchange read back later       |
+| `cfwOidcClaims`                                                                               | sync      | `CfwOidc`, the single-use claims ticket             |
+| `cfwHmac`, `cfwDigest`, `cfwRandom`                                                           | sync      | `ShimRegistry`, for absent builtins                 |
+| `cfwServeStats`, `cfwHealth`                                                                  | sync      | `StatusController` and the health probes            |
+| `cfHost`                                                                                      | async     | `FetchHandler` (**needs JSPI**)                     |
+
+`Host::has()` is the only correct way to ask whether one is present. A deployment without an email
+binding has no `cfwMail`, and a replica refuses every name that mutates.
 
 Every call is synchronous. `Host::call()` does `$reply = $invoke($json)` and reads the result
 immediately, because PHP on an `ASYNCIFY=0` build cannot await. The `fetch()` itself happens in
@@ -207,9 +237,9 @@ persistent kernel is about to serve stale pages, so treat it as a failure rather
 
 | Lane                       | Command                                    | Count    | Needs                              |
 | -------------------------- | ------------------------------------------ | -------- | ---------------------------------- |
-| syntax                     | `php tests/lint.php`                       | 44 files | nothing but PHP                    |
-| the health layer           | `php tests/health-suite.php`               | **553**  | nothing but PHP                    |
-| class loading and refusals | `php tests/load-classes.php <drupal-root>` | **94**   | a Drupal 11.3+ root with `vendor/` |
+| syntax                     | `php tests/lint.php`                       | 61 files | nothing but PHP                    |
+| the health layer           | `php tests/health-suite.php`               | **667**  | nothing but PHP                    |
+| class loading and refusals | `php tests/load-classes.php <drupal-root>` | **104**  | a Drupal 11.3+ root with `vendor/` |
 | the capabilities executing | `curl localhost:8787/capability`           | **26**   | `drupflare/worker` running         |
 
 Each suite ends in `exit()`, so coverage runs one per process. With no suite named it runs them
@@ -232,7 +262,7 @@ methods (PluginFormInterface::buildConfigurationForm, ::submitConfigurationForm)
 
 `ImageToolkitBase` implements `PluginFormInterface` but leaves those two abstract, so the class was
 not loadable at all, and the error is raised the first time something autoloads it.
-`tests/load-classes.php` is the gate: it loads all nine classes under `E_ALL`, asserts each is
+`tests/load-classes.php` is the gate: it loads every class under `E_ALL`, asserts each is
 instantiable, checks every plugin id and every `services.yml` class reference, and drives the
 absent-capability controls, where a missing capability must refuse **by name** rather than return
 something plausible.
@@ -282,7 +312,8 @@ Properties of the runtime.
   rejects unknown headers, so only `Cc`, `Bcc`, `In-Reply-To` and `References` pass through.
 - **An image style produces no derivative file.** See `CfwImageToolkit` above.
 - **`Host::call()` cannot carry a wide integer as a number.** It goes through `pw_encode()` and
-  arrives as a decimal string or a codec envelope; a plain number above 2^31 wraps.
+  arrives as a decimal string or a codec envelope; a plain number above 2^53 comes back rounded,
+  because the envelope is JSON and a JSON number is a double.
 
 ---
 
@@ -313,7 +344,7 @@ composer run analyze    # phpstan level 5, --memory-limit=1G
 bunx prettier --check . # layout, every language including PHP
 
 php tests/health-suite.php
-DRUPAL_ROOT=/path/to/drupal php tests/load-classes.php # 94; loads every class for real
+DRUPAL_ROOT=/path/to/drupal php tests/load-classes.php # 104; loads every class for real
 ```
 
 Layout is Prettier's, tabs rendered 4 wide at `printWidth` 100. `phpcs.xml.dist` gives up the sniffs
