@@ -91,6 +91,73 @@ final class OpsRegistry
 				// measured: 289-294 statements, 1.3-2.1 MB, sha1 reported for integrity
 				'cost' => '289-294 statements, 1.3-2.1 MB',
 			],
+			// #region one invocation each; see OpsRunner
+			// Eight operations were declared and one ran. These are the ones that fit a single
+			// invocation without slicing: a bounded read, or a write of one row. Anything whose cost
+			// scales with the size of the site stays above.
+			'requirements' => [
+				'label' => 'Report the status page as data.',
+				'writes' => false,
+				'sliced' => false,
+				'cost' => 'one kernel boot; the same work /admin/reports/status already does',
+			],
+			'state-get' => [
+				'label' => 'Read one state key.',
+				'writes' => false,
+				'sliced' => false,
+				'cost' => 'one read',
+			],
+			'state-set' => [
+				'label' => 'Write one state key.',
+				'writes' => true,
+				'sliced' => false,
+				'cost' => 'one write',
+			],
+			'config-get' => [
+				'label' => 'Read a configuration object, or one key inside it.',
+				'writes' => false,
+				'sliced' => false,
+				'cost' => 'one read',
+			],
+			'config-set' => [
+				'label' => 'Write one key of a configuration object.',
+				'writes' => true,
+				'sliced' => false,
+				// a config save invalidates its own tags, which is a purge rather than a rebuild
+				'cost' => 'one write plus its tag invalidation',
+			],
+			'role-list' => [
+				'label' => 'List roles and how many permissions each carries.',
+				'writes' => false,
+				'sliced' => false,
+				'cost' => 'one read',
+			],
+			'user-info' => [
+				'label' => 'Report one account by name or uid.',
+				'writes' => false,
+				'sliced' => false,
+				'cost' => 'one entity load',
+			],
+			'watchdog-show' => [
+				'label' => 'Show the most recent log entries.',
+				'writes' => false,
+				'sliced' => false,
+				'cost' => 'one bounded read, at most 50 rows',
+			],
+			'cache-clear' => [
+				'label' => 'Clear ONE cache bin.',
+				'writes' => true,
+				'sliced' => false,
+				// the whole-site flush is `cr` and stays sliced at 282.9 ms; one bin is one delete
+				'cost' => 'one delete against one bin',
+			],
+			'queue-list' => [
+				'label' => 'List queues with a worker and how deep each is.',
+				'writes' => false,
+				'sliced' => false,
+				'cost' => 'one count per queue',
+			],
+			// #endregion
 		];
 	}
 
