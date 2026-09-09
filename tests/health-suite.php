@@ -130,7 +130,9 @@ use Drupal\drupflare\Cache\CfwCacheBackend;
 use Drupal\drupflare\Plugin\Mail\CfwMail;
 use Drupal\Core\Extension\Requirement\RequirementSeverity;
 use Drupal\Core\State\StateInterface;
+use Drupal\Core\Hook\Attribute\Hook;
 use Drupal\drupflare\Hook\Requirements;
+use Drupal\drupflare\Install\Requirements\DrupflareRequirements;
 use Drupal\drupflare\Plugin\ImageToolkit\CfwImageToolkit;
 use Drupal\drupflare\Queue\CfwDeferredHttp;
 use Symfony\Component\Routing\Route;
@@ -477,7 +479,15 @@ ok(
 );
 
 echo "\n# cfw_ops replaces Drush, and every operation declares what it costs\n";
-ok('declares the eight operations', count(OpsRegistry::operations()) === 8);
+// the original eight are named rather than counted; the count moved when the one-invocation set
+// landed and a literal would have to move with it every time
+ok(
+	'still declares the eight it started with',
+	array_diff(
+		['status', 'cr', 'updb', 'cex', 'cim', 'en', 'pmu', 'sql-dump'],
+		array_keys(OpsRegistry::operations()),
+	) === [],
+);
 ok(
 	'every one has all four fields',
 	count(
@@ -488,11 +498,29 @@ ok(
 				array_key_exists('sliced', $op) &&
 				array_key_exists('cost', $op),
 		),
-	) === 8,
+	) === count(OpsRegistry::operations()),
 );
+// DERIVED, not listed. This used to assert the literal ['status'], which was true when nothing else
+// ran and became false the moment anything else did -- so it pinned the gap rather than the property
 ok(
-	'status is the only read-only unsliced operation',
-	OpsRegistry::readOnlyUnsliced() === ['status'],
+	'read-only unsliced is exactly the operations that neither write nor slice',
+	OpsRegistry::readOnlyUnsliced() ===
+		array_values(
+			array_keys(
+				array_filter(
+					OpsRegistry::operations(),
+					static fn($op) => !$op['writes'] && !$op['sliced'],
+				),
+			),
+		),
+);
+ok('status is one of them', in_array('status', OpsRegistry::readOnlyUnsliced(), true));
+ok(
+	'nothing that writes is offered as a read',
+	array_filter(
+		OpsRegistry::readOnlyUnsliced(),
+		static fn($name) => OpsRegistry::writes($name),
+	) === [],
 );
 ok(
 	'cr writes and must be sliced, at 28x an invocation',
@@ -575,10 +603,10 @@ ok(
 // #region the refuse-and-name half
 foreach (
 	[
-		'openssl_pkey_new' => 'keypair generation',
-		'openssl_pkey_export' => 'keypair export',
+		// the three that moved OFF this list are `openssl_pkey_new`, `openssl_pkey_export` and
+		// `openssl_private_encrypt`: each turned out to have a synchronous `node:crypto` primitive
+		// behind it and a named caller. `openssl_csr_new` is the one with nothing behind it at all
 		'openssl_csr_new' => 'CSR generation',
-		'openssl_private_encrypt' => 'raw private-key encryption',
 		'imagecreatetruecolor' => 'gd',
 		'exec' => 'exec',
 		'shell_exec' => 'shell_exec',
@@ -591,6 +619,23 @@ foreach (
 	ok("$fn is refused ($what)", ShimRegistry::isRefused($fn));
 	ok("$fn refusal NAMES a reason", strlen(ShimRegistry::reason($fn)) > 20);
 }
+// the routed half of the same table, asserted the same way: a verdict that moved without a `via`
+// would be a claim with no mechanism behind it
+foreach (
+	[
+		'openssl_pkey_new',
+		'openssl_pkey_export',
+		'openssl_pkey_get_public',
+		'openssl_private_encrypt',
+		'openssl_public_decrypt',
+	]
+	as $fn
+) {
+	ok("$fn is routed rather than refused", !ShimRegistry::isRefused($fn));
+	ok("$fn names what routes it", ShimRegistry::via($fn) === 'node:crypto');
+	ok("$fn says why", strlen(ShimRegistry::reason($fn)) > 20);
+}
+
 ok(
 	'a gd refusal points at CfwImageToolkit rather than just failing',
 	str_contains(ShimRegistry::alternative('imagecreatetruecolor'), 'CfwImageToolkit'),
@@ -2981,10 +3026,29 @@ ok(
 	CfwImageToolkit::deliveryUrl('public://a.png', []) === null,
 );
 
-// gd is not compiled in, and these are the formats the delivery layer serves
+// gd is not compiled in, and these are the formats the delivery layer serves.
+//
+// AVIF DEPENDS ON THE ENGINE, which is the whole reason this reports rather than declares. All four
+// shipped image styles are image_scale + image_convert_avif, and AvifImageEffect::applyEffect()
+// calls isAvifSupported() first and falls through to its parent -- whose fallback extension is webp
+// -- when the toolkit says no. Claim avif on an engine that cannot encode it and the effect calls
+// convert('avif'), gets FALSE, and logs a failed derivative instead of falling back.
+install_host(['cfwImageUrl' => new HostSpy(['ok' => true, 'engine' => 'images', 'url' => '/x'])]);
 $extensions = CfwImageToolkit::getSupportedExtensions();
 ok('webp is offered', in_array('webp', $extensions, true));
-ok('and avif, which gd would not have given us', in_array('avif', $extensions, true));
+ok('avif is offered on the engine that encodes it', in_array('avif', $extensions, true));
+
+install_host(['cfwImageUrl' => new HostSpy(['ok' => true, 'engine' => 'tinyimg', 'url' => '/x'])]);
+$extensions = CfwImageToolkit::getSupportedExtensions();
+ok('webp is offered on the wasm engine too', in_array('webp', $extensions, true));
+ok('and avif is NOT claimed there', !in_array('avif', $extensions, true));
+
+// a host that cannot answer at all must not be read as an engine that can encode avif
+install_host(['cfwImageUrl' => new HostSpy(['ok' => false, 'error' => 'no binding'])]);
+ok(
+	'a refused capability claims no avif either',
+	!in_array('avif', CfwImageToolkit::getSupportedExtensions(), true),
+);
 ok(
 	'and the jpeg spellings core asks for',
 	in_array('jpe', $extensions, true) &&
@@ -3340,6 +3404,180 @@ ok(
 		'in-memory filesystem',
 	),
 );
+// #endregion
+// #region the parked-module cost rows
+echo "\n# the park cost of redis, smtp and openid_connect, reported per site\n";
+
+// the phase is carried by the attribute rather than by a parameter, so it is what an assertion has
+// to read: an install-phase row would block installing a module that works
+$hook = (new ReflectionMethod(Requirements::class, 'runtimeRequirements'))->getAttributes(
+	Hook::class,
+);
+ok('the rows hang off a hook at all', $hook !== []);
+ok(
+	'declared for the runtime phase, which is the status report',
+	($hook[0]->getArguments()[0] ?? null) === 'runtime_requirements',
+);
+$installParked = 0;
+foreach (array_keys(DrupflareRequirements::getRequirements()) as $key) {
+	if (str_starts_with($key, 'drupflare_park_')) {
+		$installParked++;
+	}
+}
+ok('and the install phase carries none of them', $installParked === 0);
+
+$parked = Requirements::outboundCostRows(['redis', 'smtp', 'openid_connect']);
+ok('an enabled module gets a row', isset($parked['drupflare_park_redis']));
+ok('one row each, and nothing else', count($parked) === 3);
+
+// a module the site does not have is not a cost the site pays, and the mixed case is the one that
+// would pass on a blanket `return all three`
+$partial = Requirements::outboundCostRows(['smtp', 'node', 'views']);
+ok('the enabled one is reported', isset($partial['drupflare_park_smtp']));
+ok('the absent ones are not', !isset($partial['drupflare_park_redis']));
+ok('and a site with none of them gets no rows', Requirements::outboundCostRows(['node']) === []);
+
+foreach (['redis', 'smtp', 'openid_connect'] as $module) {
+	// these modules WORK; an Error here would read as a broken site
+	ok(
+		"the $module row is a warning",
+		$parked['drupflare_park_' . $module]['severity'] === RequirementSeverity::Warning,
+	);
+}
+
+/**
+ * THREE ARRANGEMENTS, NOT THREE PARKS, and the blanket assertion here could not tell them apart.
+ *
+ * Every row used to be required to name '53 ms to a distant one', on the reasoning that all three
+ * paid round trips inside a request. Two of them do not: smtp's socket never runs at all and its
+ * settings drive the host transport, and openid_connect's exchange happens at a Worker route
+ * because it cannot be parked. A per-row assertion is what distinguishes them, so a row that
+ * silently reverts to describing the wrong mechanism fails here.
+ */
+$says = static fn(string $module, string $field, string $needle): bool => str_contains(
+	$parked['drupflare_park_' . $module][$field]->getUntranslatedString(),
+	$needle,
+);
+
+// redis is the parked one: real round trips, inside the request
+ok('redis states 9 trips', $says('redis', 'value', '9 round trips'));
+ok(
+	'and names the round trip it is measured in',
+	$says('redis', 'description', '53 ms to a distant one'),
+);
+/**
+ * PARKS ARE NOT NETWORK TRIPS, and a row saying one per operation contradicts the measurement.
+ *
+ * The gate counted 189 parks for a 9-bin render and 9 trips: a write is buffered and flushed with
+ * the next answer-requiring call, so only a read finding an empty buffer waits for the wire. A row
+ * pricing this per operation would overstate a distant server by 21x.
+ */
+ok(
+	'and that they are paid per render rather than per operation',
+	$says('redis', 'description', 'per render rather than per operation'),
+);
+ok(
+	'and says the built-in backend needs no round trip, which is why it is the faster choice',
+	$says('redis', 'description', 'needs no round trip at all'),
+);
+
+// smtp is substituted: the module's configuration is used and its socket is not
+ok('smtp says the Worker sends it', $says('smtp', 'value', 'not by this module'));
+ok('and that the saved relay settings are used', $says('smtp', 'description', 'are used'));
+ok(
+	'and that nothing in a render waits for the mail server',
+	$says('smtp', 'description', 'Nothing in a page render waits'),
+);
+
+// openid_connect is PARKED, like redis: it runs its own exchange and the Worker performs the I/O
+ok('openid_connect states 2 trips', $says('openid_connect', 'value', '2 round trips'));
+ok('and that they are inside the request', $says('openid_connect', 'value', 'inside the request'));
+ok(
+	'and that the module performs its own exchange',
+	$says('openid_connect', 'description', 'performs its own authorization-code exchange'),
+);
+ok(
+	'and that no page render pays for them',
+	$says('openid_connect', 'description', 'no page render pays them'),
+);
+
+// CONTROL for the seam: the hook reads the module list off the container, and this harness has no
+// usable one. It must answer anyway, with no park row and no fatal
+$report = $requirements->runtimeRequirements();
+ok('the hook answers with no container', isset($report['drupflare_capabilities']));
+ok('and carries no park row there', !isset($report['drupflare_park_redis']));
+// #endregion
+// #region the daily quota rows
+echo "\n# the two daily ceilings, on the page an operator opens\n";
+
+/**
+ * Both daily meters, on the page an operator opens.
+ *
+ * Measured: five module installs and two heap images on one site wrote 32,641 rows in a day, 32.6%
+ * of the free plan's 100,000, and the only surface that reported it was the hosting product's own
+ * Limits page behind an owner token.
+ *
+ * The severity comes from the host's own reading rather than from a threshold restated here, so the
+ * assertions drive that field and not a percentage.
+ */
+$quotaLine = static fn(string $meter, int $used, string $status): array => [
+	'meter' => $meter,
+	'meterLabel' => $meter,
+	'period' => 'day',
+	'quantity' => $used,
+	'allowance' => 100000,
+	'percentOfAllowance' => $used / 1000,
+	'status' => $status,
+];
+$quotaStats = static fn(array $lines): array => ['spend' => ['lines' => $lines]];
+
+$healthy = Requirements::dailyQuotaRows(
+	$quotaStats([$quotaLine('rows-written', 32641, 'ok'), $quotaLine('do-requests', 12, 'ok')]),
+);
+ok('one row per daily meter', count($healthy) === 2);
+ok('keyed on the meter', isset($healthy['drupflare_quota_rows_written']));
+ok(
+	'a meter under its threshold is nothing to act on',
+	$healthy['drupflare_quota_rows_written']['severity'] === RequirementSeverity::OK,
+);
+ok(
+	'and the row names the allowance rather than only the count',
+	str_contains(
+		$healthy['drupflare_quota_rows_written']['value']->getUntranslatedString(),
+		'@allowance',
+	),
+);
+
+// BOTH DIRECTIONS. A row that cannot change severity is decoration, which is what the raw count on
+// the status page already was
+$warned = Requirements::dailyQuotaRows($quotaStats([$quotaLine('rows-written', 84000, 'warn')]));
+ok(
+	'past the reduce fraction it warns',
+	$warned['drupflare_quota_rows_written']['severity'] === RequirementSeverity::Warning,
+);
+$over = Requirements::dailyQuotaRows($quotaStats([$quotaLine('rows-written', 104451, 'over')]));
+ok(
+	'and a spent meter is an error',
+	$over['drupflare_quota_rows_written']['severity'] === RequirementSeverity::Error,
+);
+ok(
+	'which says what the site stops doing',
+	str_contains(
+		$over['drupflare_quota_rows_written']['description']->getUntranslatedString(),
+		'stops accepting writes',
+	),
+);
+
+// a meter nothing counts must not be rendered as healthy, and null is not zero
+$blind = $quotaLine('worker-requests', 0, 'ok');
+$blind['quantity'] = null;
+ok('an uncounted meter gets no row', Requirements::dailyQuotaRows($quotaStats([$blind])) === []);
+// a MONTHLY meter is not on this ladder: it does not reset at midnight, so degrading against it
+// would leave a site throttled for weeks
+$monthly = $quotaLine('image-transforms', 4000, 'warn');
+$monthly['period'] = 'month';
+ok('and a monthly one is not on it', Requirements::dailyQuotaRows($quotaStats([$monthly])) === []);
+ok('off-platform there is nothing to report', Requirements::dailyQuotaRows(null) === []);
 // #endregion
 // #region the router dumper's skip
 echo "\n# the router dump that does not rewrite the rows already in the table\n";

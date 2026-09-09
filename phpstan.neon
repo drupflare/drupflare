@@ -14,3 +14,8 @@ parameters:
         # signature that can drift from core's.
         - vendor/drupal/core/includes/bootstrap.inc
         - vendor/drupal/core/includes/common.inc
+        # A MODULE's namespace is registered by the kernel at runtime, not by composer, so
+        # Drupal\user\ resolves at execution and is invisible to phpstan. Same reason as the include
+        # files above: the real definitions from the real dependency rather than a stub that drifts.
+        - vendor/drupal/core/modules/user/src/Entity/Role.php
+        - vendor/drupal/core/modules/user/src/Entity/User.php
