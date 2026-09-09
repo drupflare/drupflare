@@ -10,6 +10,64 @@
 
 declare(strict_types=1);
 
+use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\drupflare\StreamWrapper\HttpsStreamWrapper;
 
 HttpsStreamWrapper::register();
+
+/**
+ * Implements hook_help().
+ *
+ * /admin/help is where a Drupal administrator looks first and there was nothing about Drupflare
+ * there at all, on a site whose entire runtime is Drupflare.
+ */
+function drupflare_help(string $route_name, RouteMatchInterface $route_match): string
+{
+	switch ($route_name) {
+		case 'help.page.drupflare':
+			return implode('', [
+				'<h2>' . t('About') . '</h2>',
+				'<p>' .
+				t(
+					'This site runs as a Cloudflare Worker rather than on a web server. PHP is compiled to WebAssembly and runs inside a Durable Object, and the object database is the site database. Drupflare replaces the compiled C libraries a normal host provides with platform primitives: mail, image transformations, outbound HTTP, logging and request isolation.',
+				) .
+				'</p>',
+				'<h2>' . t('What is different here') . '</h2>',
+				'<dl>',
+				'<dt>' . t('Outbound HTTP is cached or deferred') . '</dt>',
+				'<dd>' .
+				t(
+					'A Worker cannot make a request and wait for it inside the same invocation. A call that has an answer in the fetch cache is served at once; anything else is queued and answered on a later request. Cron work, update checks and webhooks all take that path.',
+				) .
+				'</dd>',
+				'<dt>' . t('Cron runs one hook per invocation') . '</dt>',
+				'<dd>' .
+				t(
+					'A full cron run does not fit an invocation budget, so it is split into units driven from an alarm. The Runtime Status page reports which unit ran last.',
+				) .
+				'</dd>',
+				'<dt>' . t('Pages are served from a tier in front of Drupal') . '</dt>',
+				'<dd>' .
+				t(
+					'A rendered page is stored so the next visitor is answered without booting the interpreter. Saving content invalidates what depends on it.',
+				) .
+				'</dd>',
+				'</dl>',
+				'<h2>' . t('Where to look') . '</h2>',
+				'<p>' .
+				t(
+					'Runtime Status reports the daily meters, the read replica pool, the page tiers and the outbound queues. The Operations Terminal runs the operations this runtime has, in Drush spelling.',
+				) .
+				'</p>',
+			]);
+
+		case 'drupflare.status':
+			return '<p>' .
+				t(
+					'Read live from the Worker. Everything here is a counter the runtime already keeps; none of it is configuration and none of it can be edited from this page.',
+				) .
+				'</p>';
+	}
+
+	return '';
+}

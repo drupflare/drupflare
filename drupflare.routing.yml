@@ -17,3 +17,23 @@ drupflare.oidc_complete:
     _access: 'TRUE'
   options:
     no_cache: true
+
+drupflare.admin:
+  path: '/admin/config/drupflare'
+  defaults:
+    _controller: '\Drupal\system\Controller\SystemController::systemAdminMenuBlockPage'
+    _title: 'Drupflare'
+  requirements:
+    _permission: 'administer site configuration'
+  options:
+    _admin_route: true
+
+drupflare.status:
+  path: '/admin/config/drupflare/status'
+  defaults:
+    _controller: '\Drupal\drupflare\Controller\StatusController::page'
+    _title: 'Runtime Status'
+  requirements:
+    _permission: 'administer site configuration'
+  options:
+    _admin_route: true

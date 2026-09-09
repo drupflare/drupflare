@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Drupal\drupflare\Hook;
 
+use Drupal;
 use Drupal\Core\Extension\Requirement\RequirementSeverity;
 use Drupal\Core\Hook\Attribute\Hook;
 use Drupal\Core\Site\Settings;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
+use Drupal\drupflare\Controller\StatusController;
 use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
 use Drupal\drupflare\Password\CfwPassword;
@@ -135,7 +137,7 @@ final class Requirements
 		$toolkits = [];
 		try {
 			$toolkits = array_keys(
-				\Drupal::service('image.toolkit.manager')->getAvailableToolkits(),
+				Drupal::service('image.toolkit.manager')->getAvailableToolkits(),
 			);
 		} catch (Throwable $e) {
 			$toolkits = [];
@@ -159,7 +161,167 @@ final class Requirements
 
 		// anything the host could neither shim nor accommodate reports itself here rather
 		// than being silently absent. Merged last so a declaration cannot displace a fixed row
-		return $requirements + Degradation::requirements();
+		return $requirements +
+			self::dailyQuotaRows(StatusController::stats()) +
+			Degradation::requirements() +
+			self::outboundCostRows(self::enabledModules());
+	}
+
+	/**
+	 * The two daily ceilings, on the page an operator opens when something is wrong.
+	 *
+	 * Measured: five module installs and two heap images on one site wrote 104,451 rows in a day and
+	 * put the site read-only at 104% of quota, and nothing an operator could reach said so. The
+	 * numbers existed -- `serveStatsSync()` has carried the allowance, the percentage and the status
+	 * for both meters all along -- and the only surface that read them was the hosting product's own
+	 * Limits page, behind an owner token a site administrator does not have. An operator who fills
+	 * their quota setting a site up has to be told before the site stops writing, not after.
+	 *
+	 * The severity comes from the host's own reading rather than from a threshold restated here: a
+	 * second copy of 80% and 95% would drift from `degrade.ts` the first time either moved.
+	 *
+	 * @param array|null $stats
+	 *   The host snapshot, or NULL when this is not running under the Worker.
+	 *
+	 * @return array<string, array<string, mixed>>
+	 *   Keyed the way `hook_runtime_requirements()` wants. Empty off-platform.
+	 */
+	public static function dailyQuotaRows(?array $stats): array
+	{
+		$lines = $stats['spend']['lines'] ?? null;
+		if (!is_array($lines)) {
+			return [];
+		}
+
+		// worst line per meter, because several dimensions share one and the meter is what runs out
+		$worst = [];
+		foreach ($lines as $line) {
+			if (!is_array($line) || ($line['period'] ?? '') !== 'day') {
+				continue;
+			}
+			// a line nothing counts reports null, and null is not zero: a meter with no counter
+			// must not be rendered as healthy
+			if (!is_numeric($line['quantity'] ?? null) || !is_numeric($line['allowance'] ?? null)) {
+				continue;
+			}
+			$meter = (string) ($line['meter'] ?? '');
+			$percent = (float) ($line['percentOfAllowance'] ?? 0);
+			if ($meter === '' || ($worst[$meter]['percent'] ?? -1) >= $percent) {
+				continue;
+			}
+			$worst[$meter] = [
+				'percent' => $percent,
+				'label' => (string) ($line['meterLabel'] ?? $meter),
+				'quantity' => (int) $line['quantity'],
+				'allowance' => (int) $line['allowance'],
+				'status' => (string) ($line['status'] ?? 'ok'),
+			];
+		}
+
+		$rows = [];
+		foreach ($worst as $meter => $reading) {
+			$severity = match ($reading['status']) {
+				'over' => RequirementSeverity::Error,
+				'warn' => RequirementSeverity::Warning,
+				default => RequirementSeverity::OK,
+			};
+			$rows['drupflare_quota_' . preg_replace('/[^a-z0-9_]+/i', '_', $meter)] = [
+				'title' => new TranslatableMarkup('Drupflare daily quota: @meter', [
+					'@meter' => $reading['label'],
+				]),
+				'value' => new TranslatableMarkup('@used of @allowance today (@percent%)', [
+					'@used' => number_format($reading['quantity']),
+					'@allowance' => number_format($reading['allowance']),
+					'@percent' => number_format($reading['percent'], 1),
+				]),
+				'description' =>
+					$severity === RequirementSeverity::OK
+						? null
+						: new TranslatableMarkup(
+							'This resets at midnight UTC. Past 80% the site stops cron, the fill queue, watchdog writes and image regeneration; past 95% it stops accepting writes altogether and answers cached pages only. Installing modules and taking heap images are the most expensive things an operator does, so a setup session is where this is reached.',
+						),
+				'severity' => $severity,
+			];
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * Status-report rows for contrib modules whose outbound I/O this platform handles its own way.
+	 *
+	 * Three modules, two arrangements, and the row says which. Redis and OpenID Connect are PARKED:
+	 * the Zend continuation of the blocking call is frozen, the host performs the exchange, and the
+	 * chain resumes inside the same request. SMTP is SUBSTITUTED: the module's own socket never runs
+	 * and its settings drive the host transport.
+	 *
+	 * The one figure common to all three is the round trip, measured from a Durable Object: 1 ms to
+	 * a same-region server and 53 ms to a distant one. So the operator's choice of server location
+	 * is the lever, which is why every row names it.
+	 *
+	 * Separate from the hook, and public, because everything here is a function of the enabled
+	 * module list and a test should not need a booted kernel to drive it.
+	 *
+	 * @param string[] $enabled
+	 *   Machine names of the modules installed on this site.
+	 *
+	 * @return array<string, array<string, mixed>>
+	 *   Keyed the way `hook_runtime_requirements()` wants. Empty when a site has none of them.
+	 */
+	public static function outboundCostRows(array $enabled): array
+	{
+		$rows = [];
+
+		if (in_array('redis', $enabled, true)) {
+			$rows['drupflare_park_redis'] = [
+				'title' => new TranslatableMarkup('Drupflare Redis network cost'),
+				'value' => new TranslatableMarkup('9 round trips per uncached render'),
+				'description' => new TranslatableMarkup(
+					'A render that misses the page cache pays about 9 round trips to Redis, measured at one multiple-key read per cache bin, so the cost is per render rather than per operation: writes are buffered and only a read that finds an empty buffer waits for the wire. A round trip is 1 ms to a same-region server and 53 ms to a distant one, so a same-region server adds about 9 ms per render and a distant one about 477 ms. The Durable Object built-in cache backend is a local read and needs no round trip at all, which makes it the faster choice on this platform; Redis is here for a deployment that already has a server.',
+				),
+				'severity' => RequirementSeverity::Warning,
+			];
+		}
+
+		if (in_array('smtp', $enabled, true)) {
+			$rows['drupflare_park_smtp'] = [
+				'title' => new TranslatableMarkup('Drupflare SMTP delivery'),
+				'value' => new TranslatableMarkup('sent by the Worker, not by this module'),
+				'description' => new TranslatableMarkup(
+					'The relay, port and credentials saved here are used, and the socket this module would open is not: the Worker reads smtp.settings and sends over its own transport. Delivery happens after the response rather than inside it, so a message is queued when the request ends and sent on the next scheduled run. Nothing in a page render waits for the mail server.',
+				),
+				'severity' => RequirementSeverity::Warning,
+			];
+		}
+
+		if (in_array('openid_connect', $enabled, true)) {
+			$rows['drupflare_park_openid_connect'] = [
+				'title' => new TranslatableMarkup('Drupflare OpenID Connect exchange'),
+				'value' => new TranslatableMarkup('2 round trips per login, inside the request'),
+				'description' => new TranslatableMarkup(
+					'This module performs its own authorization-code exchange. The PHP call is suspended, the Worker makes the request, and the same call resumes with the answer, so the token set arrives before the login response is written. One login costs 2 round trips to the provider, the token POST and the userinfo GET, which is 2 ms to a same-region provider and about 106 ms to a distant one. Both are on the one request per session that carries the login, so no page render pays them. The Worker also has its own /oidc route for a site that configures no client here.',
+				),
+				'severity' => RequirementSeverity::Warning,
+			];
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * Machine names of every enabled module.
+	 *
+	 * @return string[]
+	 *   Empty when there is no container, which is every context but a booted kernel.
+	 */
+	private static function enabledModules(): array
+	{
+		try {
+			return array_keys(Drupal::moduleHandler()->getModuleList());
+		} catch (Throwable) {
+			// a missing row beats a fatal on the page an operator opens to diagnose one
+			return [];
+		}
 	}
 
 	/**

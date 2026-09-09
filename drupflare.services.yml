@@ -5,6 +5,11 @@ services:
     tags:
       - { name: logger }
 
+  drupflare.mail_interface_override:
+    class: Drupal\drupflare\Config\MailInterfaceOverride
+    tags:
+      - { name: config.factory.override, priority: 300 }
+
   drupflare.http_deferred:
     class: Drupal\drupflare\Queue\CfwDeferredHttp
 

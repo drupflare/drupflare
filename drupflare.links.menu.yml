@@ -1,6 +1,20 @@
+drupflare.admin:
+  title: 'Drupflare'
+  description: 'The Worker runtime this site is served from: meters, the replica pool, page tiers and the outbound queues.'
+  route_name: drupflare.admin
+  parent: system.admin_config
+  weight: 40
+
+drupflare.status:
+  title: 'Runtime Status'
+  description: 'What the Worker reports about this site, read live.'
+  route_name: drupflare.status
+  parent: drupflare.admin
+  weight: 0
+
 drupflare.ops_terminal:
   title: 'Operations Terminal'
   description: 'Run the operations this runtime has, in Drush spelling.'
   route_name: drupflare.ops_terminal
-  parent: system.admin_config_development
+  parent: drupflare.admin
   weight: 10
