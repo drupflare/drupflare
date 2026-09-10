@@ -185,6 +185,23 @@ final class OpsTerminalForm extends FormBase
 			return;
 		}
 
+		// THE CATCH ABOVE CANNOT FIRE, and the reply was never read, so every command reported
+		// "ran." whatever happened. `Host::call()` does not throw -- an absent capability returns
+		// `['ok' => false, 'error' => 'capability cfwOps is not installed in this deployment']` --
+		// so the one thing the docblock above promises to prevent was exactly what shipped.
+		if (!is_array($reply) || ($reply['ok'] ?? false) !== true) {
+			$this->messenger()->addError(
+				$this->t('@what did not run: @why', [
+					'@what' => self::name($parsed),
+					'@why' => is_array($reply)
+						? (string) ($reply['error'] ?? 'the host gave no reason')
+						: 'the host gave no reply',
+				]),
+			);
+			$form_state->setRebuild(true);
+			return;
+		}
+
 		$this->messenger()->addStatus(
 			$parsed['sliced'] === true
 				? $this->t('@what is queued and runs across background invocations.', [

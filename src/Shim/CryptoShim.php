@@ -69,7 +69,11 @@ final class CryptoShim
 	 */
 	public static function digest(string $data, string $algorithm, bool $binary = false): string
 	{
-		ShimRegistry::assertRouted('openssl_digest');
+		// NOT `assertRouted('openssl_digest')`, which is what this used to do. That entry is a
+		// REFUSE now, because the shipping binary is built WITH_OPENSSL=0 and the function does
+		// not exist -- and this method never calls it anyway. It uses `cfwDigest` when the host
+		// installs one and `hash()` otherwise, so gating it on a verdict about a third function
+		// meant the honest verdict made the working path throw.
 		$subtle = self::subtleName($algorithm);
 
 		if ($subtle !== null && Host::has('cfwDigest')) {

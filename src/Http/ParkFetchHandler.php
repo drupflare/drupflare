@@ -127,7 +127,16 @@ final class ParkFetchHandler
 				// deferred one it replaced: every Search.gov render answered 500 until this existed.
 				//
 				// The frames are recorded rather than logged, because a refusal is per REQUEST and a
-				// watchdog row per request is a meter this project counts. `/__serve-stats` reads it.
+				// watchdog row per request is a meter this project counts.
+				//
+				// NOTHING READS THIS YET, and the line here used to say `/__serve-stats` did.
+				// `serveStatsSync()` is synchronous by construction, so it cannot run PHP to read a
+				// global, and no other seam carries one out of a render -- so a refused park is
+				// invisible today. That matters beyond diagnostics: the deferred transport it falls
+				// back to answers on a LATER invocation, and an authorization code is single-use,
+				// so the `openid_connect` exchange the park exists for cannot complete on the
+				// fallback. Surfacing it needs a seam that returns request-scoped state alongside
+				// the render, which is the change to make rather than a read on the hot path.
 				$GLOBALS['CFW_PARK_REFUSAL'] = Park::refusal() + [
 					'url' => (string) $request->getUri(),
 				];

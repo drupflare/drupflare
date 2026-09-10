@@ -587,18 +587,26 @@ ok(
 foreach (['curl_init', 'curl_setopt', 'curl_exec', 'curl_getinfo', 'curl_close'] as $fn) {
 	ok("$fn routes over CfwDeferredHttp", ShimRegistry::via($fn) === 'CfwDeferredHttp');
 }
+// THESE THREE ASSERTED A ROUTE THAT NEVER EXISTED, which is why the table could lie and stay
+// green. `CryptoShim` is the implementation and the worker installs no `cfwDigest`, `cfwHmac` or
+// `cfwRandom`, so nothing was routed anywhere. Two are PHP builtins and worked regardless;
+// `openssl_digest` does not exist at all on a `WITH_OPENSSL=0` binary, so the table's verdict sent
+// a caller at a fatal.
 ok(
-	'openssl_digest routes over crypto.subtle',
-	str_contains(ShimRegistry::via('openssl_digest'), 'crypto.subtle'),
+	'openssl_digest is refused, because the binary has no openssl',
+	ShimRegistry::verdict('openssl_digest') === ShimRegistry::REFUSE,
 );
 ok(
-	'hash_hmac routes over crypto.subtle',
-	str_contains(ShimRegistry::via('hash_hmac'), 'crypto.subtle'),
+	'and the refusal names what to use instead',
+	str_contains(ShimRegistry::alternative('openssl_digest'), 'hash()'),
 );
-ok(
-	'random_bytes routes over the host CSPRNG',
-	str_contains(ShimRegistry::via('random_bytes'), 'crypto'),
-);
+foreach (['hash_hmac', 'random_bytes'] as $fn) {
+	ok("$fn is native, not routed", ShimRegistry::verdict($fn) === ShimRegistry::NATIVE);
+	ok("$fn claims no route", ShimRegistry::via($fn) === '');
+}
+// the control: a function that genuinely IS routed still reads as one, so the two cases above are
+// not passing because every verdict became NATIVE
+ok('curl_exec is still routed', ShimRegistry::verdict('curl_exec') === ShimRegistry::ROUTE);
 
 // #region the refuse-and-name half
 foreach (
@@ -1927,9 +1935,14 @@ ok(
 // including ones assembled before this module is on the list
 $bare = new ContainerBuilder();
 (new DrupflareServiceProvider())->register($bare);
+// REGISTERED EVEN THERE, and this asserted the opposite. Returning first left the one-argument
+// definition from `drupflare.services.yml` standing, and `RequestResetter::__construct` defaults
+// `array $resettable = []` -- so it constructed cleanly and reset NOTHING, on the class that
+// exists to stop one request's identity reaching the next. A fail-open the test had pinned.
 ok(
-	'a container with no http_handler_stack returns before registering the resetter',
-	!$bare->hasDefinition('drupflare.request_resetter'),
+	'a container with no http_handler_stack still gets a real resetter',
+	$bare->hasDefinition('drupflare.request_resetter') &&
+		count($bare->getDefinition('drupflare.request_resetter')->getArguments()) === 2,
 );
 ok('and nothing else was invented', !$bare->hasDefinition('router.dumper'));
 

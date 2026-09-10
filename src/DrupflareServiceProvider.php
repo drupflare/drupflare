@@ -56,6 +56,13 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 		$this->registerLockBackend($container);
 		$this->registerPassword($container);
 
+		// BEFORE the early return below, and it was after. `registerResetter()` overrides the
+		// one-argument definition in `drupflare.services.yml` with the real two-argument one; a
+		// build with no `http_handler_stack` returned first and left the YAML definition standing,
+		// whose `array $resettable = []` default constructs cleanly and resets NOTHING. A silent
+		// fail-open on the class that exists to stop one request's identity reaching the next.
+		$this->registerResetter($container);
+
 		if (!$container->hasDefinition('http_handler_stack')) {
 			return;
 		}
@@ -89,8 +96,6 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 		$container
 			->getDefinition('http_handler_stack')
 			->setArguments([$container->getDefinition('drupflare.fetch_handler')]);
-
-		$this->registerResetter($container);
 	}
 
 	/**

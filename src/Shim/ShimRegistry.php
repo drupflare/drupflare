@@ -94,24 +94,32 @@ final class ShimRegistry
 				'alternative' => '',
 			],
 			// #endregion
-			// #region routed over crypto.subtle
+			// #region the crypto three, and all three verdicts here were wrong
+			//
+			// They said ROUTE over crypto.subtle, and the route does not exist: `CryptoShim` is the
+			// implementation and the worker installs no `cfwDigest`, `cfwHmac` or `cfwRandom`, so
+			// nothing was ever routed anywhere. Two of them are PHP builtins and worked regardless,
+			// which is why nobody noticed. `openssl_digest` is NOT -- the shipping binary is built
+			// `WITH_OPENSSL=0` -- so a caller trusting this table got
+			// `Call to undefined function openssl_digest()` from the one place whose stated job is
+			// that "an unlisted function is one nobody has thought about".
 			'openssl_digest' => [
-				'verdict' => self::ROUTE,
-				'via' => 'crypto.subtle.digest',
+				'verdict' => self::REFUSE,
+				'via' => '',
 				'why' =>
-					'SHA-1, SHA-256, SHA-384 and SHA-512 only; crypto.subtle implements no others.',
-				'alternative' => '',
+					'The binary is built WITH_OPENSSL=0, so this function does not exist at all.',
+				'alternative' => 'hash(), which is ext/standard and covers the same digests.',
 			],
 			'hash_hmac' => [
-				'verdict' => self::ROUTE,
-				'via' => 'crypto.subtle.sign',
-				'why' => 'HMAC over the same four digests, keyed through importKey().',
+				'verdict' => self::NATIVE,
+				'via' => '',
+				'why' => 'ext/hash is compiled in, so this is the real function.',
 				'alternative' => '',
 			],
 			'random_bytes' => [
-				'verdict' => self::ROUTE,
-				'via' => 'crypto.getRandomValues',
-				'why' => 'The host CSPRNG, with /dev/urandom as the in-wasm fallback.',
+				'verdict' => self::NATIVE,
+				'via' => '',
+				'why' => 'ext/random is compiled in and reads the host CSPRNG through emscripten.',
 				'alternative' => '',
 			],
 			// #endregion
