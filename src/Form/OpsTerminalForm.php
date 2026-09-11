@@ -189,13 +189,13 @@ final class OpsTerminalForm extends FormBase
 		// "ran." whatever happened. `Host::call()` does not throw -- an absent capability returns
 		// `['ok' => false, 'error' => 'capability cfwOps is not installed in this deployment']` --
 		// so the one thing the docblock above promises to prevent was exactly what shipped.
-		if (!is_array($reply) || ($reply['ok'] ?? false) !== true) {
+		// `Host::call()` is declared `: array`, so the `is_array()` half of this was dead and PHPStan
+		// said so. What is NOT dead is the `ok` half, which is the whole reason this block exists
+		if (($reply['ok'] ?? false) !== true) {
 			$this->messenger()->addError(
 				$this->t('@what did not run: @why', [
 					'@what' => self::name($parsed),
-					'@why' => is_array($reply)
-						? (string) ($reply['error'] ?? 'the host gave no reason')
-						: 'the host gave no reply',
+					'@why' => (string) ($reply['error'] ?? 'the host gave no reason'),
 				]),
 			);
 			$form_state->setRebuild(true);

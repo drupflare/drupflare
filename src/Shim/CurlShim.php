@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\drupflare\Shim;
 
+use Drupal\drupflare\Http\ParkFetchHandler;
 use Drupal\drupflare\Queue\CfwDeferredHttp;
 use GuzzleHttp\Psr7\Request;
 
@@ -20,10 +21,11 @@ use GuzzleHttp\Psr7\Request;
  * in the message.
  *
  * A handle is a plain array, not a resource: there is nothing to open. Nothing leaves the isolate
- * until exec(), and exec() delegates to `CfwDeferredHttp`, which answers from the HTTP cache when a
- * previous fetch left a body and otherwise queues the request and reports a 202. **A 202 is not a
- * body.** exec() returns FALSE for it and getinfo() reports the 202 under `cfw_deferred`, so a
- * caller that needs the bytes can tell "queued" from "the server returned nothing".
+ * until exec(), which goes through {@see ParkFetchHandler} where the runtime can park and through
+ * `CfwDeferredHttp` where it cannot. On the deferred path a first call answers 202 from the queue.
+ * **A 202 is not a body.** exec() returns FALSE for it and getinfo() reports the 202 under
+ * `cfw_deferred`, so a caller that needs the bytes can tell "queued" from "the server returned
+ * nothing".
  */
 final class CurlShim
 {
@@ -62,18 +64,37 @@ final class CurlShim
 
 	/**
 	 * The handler requests go through; injectable so the suite can drive it without a host.
+	 *
+	 * Typed as a callable rather than as `CfwDeferredHttp`, because the default is now whichever
+	 * transport the runtime can actually serve. Both satisfy Guzzle's handler shape.
+	 *
+	 * @var callable(\Psr\Http\Message\RequestInterface, array): \GuzzleHttp\Promise\PromiseInterface
 	 */
-	private CfwDeferredHttp $handler;
+	private $handler;
 
 	/**
 	 * Builds the shim over a handler.
 	 *
-	 * @param CfwDeferredHttp|null $handler
-	 *   The handler, or NULL for the default.
+	 * **THE DEFAULT PARKS WHERE IT CAN, and the docblock used to say it could not.** The shim was
+	 * written against a runtime where PHP could not await, so `curl_exec()` queued and returned
+	 * FALSE with `CURLE_COULDNT_CONNECT` on the first call for a URL. That is honest and it is
+	 * useless to an SDK: Stripe authorises a payment inside one submit handler and has nowhere to
+	 * put a second attempt. `ext/cfwpark` suspends the PHP call and the Worker performs the fetch,
+	 * so the answer now arrives inside the same `curl_exec()` that asked for it.
+	 *
+	 * The deferred transport stays as the fallback, chosen here and again inside
+	 * {@see ParkFetchHandler} when a park is refused mid-call -- so a build without the extension,
+	 * a host without the loop, and a frame the park cannot splice all degrade to exactly what
+	 * shipped before rather than to an error.
+	 *
+	 * @param callable|null $handler
+	 *   The handler, or NULL to pick the best the runtime offers.
 	 */
-	public function __construct(?CfwDeferredHttp $handler = null)
+	public function __construct(?callable $handler = null)
 	{
-		$this->handler = $handler ?? new CfwDeferredHttp();
+		$this->handler =
+			$handler ??
+			(ParkFetchHandler::available() ? new ParkFetchHandler() : new CfwDeferredHttp());
 	}
 
 	/**

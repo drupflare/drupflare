@@ -137,8 +137,11 @@ use Drupal\drupflare\Plugin\ImageToolkit\CfwImageToolkit;
 use Drupal\drupflare\Queue\CfwDeferredHttp;
 use Symfony\Component\Routing\Route;
 use Symfony\Component\Routing\RouteCollection;
+use Drupal\drupflare\Http\ParkFetchHandler;
+use GuzzleHttp\Promise\FulfilledPromise;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Request;
+use GuzzleHttp\Psr7\Response as GuzzleResponse;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 
 // CurlShim's exec() path needs Guzzle's PSR-7, which is a composer dependency rather
@@ -808,6 +811,34 @@ ok('error() is empty on a fresh handle', $curl->error($okArray) === '');
 $closing = $curl->init('https://example.invalid/f');
 $curl->close($closing);
 ok('close() empties the handle so a reuse fails loudly', $closing === []);
+
+echo "\n# curl_exec answers inline where the runtime can park, and defers where it cannot\n";
+
+// The seam, driven both ways. `curl_exec()` used to return FALSE with CURLE_COULDNT_CONNECT on
+// every first call for a URL, which is honest and useless to an SDK that authorises a payment
+// inside one submit handler. The default transport is the park now; what must hold is that it
+// is CHOSEN when available and that the deferred one is still there when it is not.
+ok(
+	'a park is unavailable under a bare PHP, so the shim degrades rather than hanging',
+	ParkFetchHandler::available() === false,
+);
+if ($hasPsr7) {
+	// injected, because this runtime has no extension to park with; the assertion is that the
+	// shim USES whatever handler answers, so an inline answer reaches the caller as a body
+	$inline = new CurlShim(
+		static fn($request, $options) => new FulfilledPromise(
+			new GuzzleResponse(200, ['content-type' => 'text/plain'], 'inline-answer'),
+		),
+	);
+	$parked = $inline->init('https://example.invalid/parked');
+	$inline->setopt($parked, 19913, 1);
+	ok('an inline transport answers inside exec()', $inline->exec($parked) === 'inline-answer');
+	ok('and reports no error', $inline->errno($parked) === CurlShim::CURLE_OK);
+	ok(
+		'and carries no deferred marker, so a caller cannot mistake it for a queued 202',
+		$inline->getinfo($parked, 'cfw_deferred') === '',
+	);
+}
 
 echo "\n# curl_exec with no host bridge reports a 202/503, never a silent empty body\n";
 
@@ -3046,15 +3077,55 @@ ok(
 // calls isAvifSupported() first and falls through to its parent -- whose fallback extension is webp
 // -- when the toolkit says no. Claim avif on an engine that cannot encode it and the effect calls
 // convert('avif'), gets FALSE, and logs a failed derivative instead of falling back.
-install_host(['cfwImageUrl' => new HostSpy(['ok' => true, 'engine' => 'images', 'url' => '/x'])]);
+//
+// THE HOST NAMES THE LIST NOW. Deriving it from the engine's NAME pinned the wasm arm to what it
+// encoded when the line was written, and tinyimg 1.1 added AVIF -- so every shipped style went on
+// degrading to webp with nothing reporting it.
+install_host([
+	'cfwImageUrl' => new HostSpy([
+		'ok' => true,
+		'engine' => 'images',
+		'url' => '/x',
+		'extensions' => ['png', 'jpe', 'jpeg', 'jpg', 'gif', 'webp', 'avif'],
+	]),
+]);
 $extensions = CfwImageToolkit::getSupportedExtensions();
 ok('webp is offered', in_array('webp', $extensions, true));
 ok('avif is offered on the engine that encodes it', in_array('avif', $extensions, true));
 
-install_host(['cfwImageUrl' => new HostSpy(['ok' => true, 'engine' => 'tinyimg', 'url' => '/x'])]);
+install_host([
+	'cfwImageUrl' => new HostSpy([
+		'ok' => true,
+		'engine' => 'tinyimg',
+		'url' => '/x',
+		'extensions' => ['png', 'jpe', 'jpeg', 'jpg', 'gif', 'webp'],
+	]),
+]);
 $extensions = CfwImageToolkit::getSupportedExtensions();
 ok('webp is offered on the wasm engine too', in_array('webp', $extensions, true));
-ok('and avif is NOT claimed there', !in_array('avif', $extensions, true));
+ok('and avif is NOT claimed when the host does not name it', !in_array('avif', $extensions, true));
+
+// the same engine NAME, now naming avif: the list follows the capability rather than the name, and
+// asserting both directions is what keeps this from re-reading as "tinyimg cannot encode avif"
+install_host([
+	'cfwImageUrl' => new HostSpy([
+		'ok' => true,
+		'engine' => 'tinyimg',
+		'url' => '/x',
+		'extensions' => ['png', 'jpe', 'jpeg', 'jpg', 'gif', 'webp', 'avif'],
+	]),
+]);
+$extensions = CfwImageToolkit::getSupportedExtensions();
+ok('and IS claimed on the same engine once the host names it', in_array('avif', $extensions, true));
+
+// a host that answers no `extensions` at all is an older one; the pre-1.1 set is what every engine
+// has always encoded, and claiming more than that is the one failure this list exists to avoid
+install_host(['cfwImageUrl' => new HostSpy(['ok' => true, 'engine' => 'tinyimg', 'url' => '/x'])]);
+$extensions = CfwImageToolkit::getSupportedExtensions();
+ok(
+	'an older host falls back to the pre-1.1 set',
+	$extensions === ['png', 'jpe', 'jpeg', 'jpg', 'gif', 'webp'],
+);
 
 // a host that cannot answer at all must not be read as an engine that can encode avif
 install_host(['cfwImageUrl' => new HostSpy(['ok' => false, 'error' => 'no binding'])]);

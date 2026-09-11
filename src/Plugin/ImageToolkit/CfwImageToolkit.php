@@ -238,12 +238,20 @@ class CfwImageToolkit extends ImageToolkitBase
 		// wasm engine does encode. So core degrades on its own with no configuration change.
 		// Claim avif while the engine cannot produce it and the effect calls convert('avif'), gets
 		// FALSE, and logs a failed derivative instead of falling back.
-		$base = ['png', 'jpe', 'jpeg', 'jpg', 'gif', 'webp'];
+		//
+		// THE HOST NAMES THEM NOW. This derived the list from the engine's NAME, which pinned the
+		// wasm arm to whatever it encoded the day the line was written; tinyimg 1.1 added AVIF and
+		// all four styles went on degrading to webp. The host reads the module's own feature list.
 		$reply = Host::call('cfwImageUrl', [
 			'uri' => 'public://cfw-capability-probe.png',
 			'transform' => ['width' => 1],
 		]);
-		return ($reply['engine'] ?? '') === 'images' ? array_merge($base, ['avif']) : $base;
+		$named = $reply['extensions'] ?? null;
+		if (is_array($named) && $named !== []) {
+			return array_values(array_map('strval', $named));
+		}
+		// an older host answers no `extensions`; claim only what every engine has always encoded
+		return ['png', 'jpe', 'jpeg', 'jpg', 'gif', 'webp'];
 	}
 
 	/**
