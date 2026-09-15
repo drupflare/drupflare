@@ -21,3 +21,9 @@ services:
     class: Drupal\drupflare\Search\SolariumTransport
     tags:
       - { name: event_subscriber }
+
+  drupflare.csrf_placeholder:
+    class: Drupal\drupflare\Routing\CsrfPlaceholderSubscriber
+    arguments: ['@csrf_token']
+    tags:
+      - { name: event_subscriber }
