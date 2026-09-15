@@ -3030,10 +3030,15 @@ ok(
 // ImageToolkitBase implements PluginFormInterface but leaves these abstract, so a toolkit that
 // omits them is not a loadable class at all
 $form = ['existing' => ['#type' => 'markup']];
-ok(
-	'buildConfigurationForm hands the form back unchanged',
-	$image->buildConfigurationForm($form, new FormState()) === $form,
-);
+$built = $image->buildConfigurationForm($form, new FormState());
+// IT USED TO HAND THE FORM BACK UNCHANGED, and that was the defect rather than the contract. One
+// plugin fronts two engines and the page named the wrong one: the title said Cloudflare Images
+// while `IMAGE_ENGINE` defaults to the worker-side encoder, and the form said there was nothing to
+// configure. It reports which engine is in force and what that engine encodes, both read from the
+// host rather than derived from the engine's name.
+ok('buildConfigurationForm keeps what the caller already had', isset($built['existing']));
+ok('buildConfigurationForm reports the engine in force', isset($built['engine']['#markup']));
+ok('buildConfigurationForm reports what that engine encodes', isset($built['formats']['#markup']));
 ok(
 	'submitConfigurationForm stores nothing and returns nothing',
 	(static function () use ($image, $form): bool {

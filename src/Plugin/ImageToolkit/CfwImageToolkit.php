@@ -32,11 +32,17 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
  *
  * Dimensions come from getimagesize(), which is part of PHP's core and does not
  * need gd.
+ *
+ * THE TITLE IS NOT "Cloudflare Images", AND IT NAMED THE WRONG ENGINE ON EVERY DEFAULT SITE.
+ * This one plugin fronts two: tinyimg, a wasm encoder running in the front worker, which is the
+ * DEFAULT, and Cloudflare Images, which is opt-in behind IMAGE_ENGINE=images. The old title told
+ * an operator their site used a product it does not use, and buildConfigurationForm() said there
+ * was nothing to configure while the choice sat in a deployed variable.
  */
 #[
 	ImageToolkit(
 		id: 'cfw_images',
-		title: new TranslatableMarkup('Cloudflare Images (delivery-time resizing)'),
+		title: new TranslatableMarkup('Drupflare (delivery-time resizing)'),
 	),
 ]
 class CfwImageToolkit extends ImageToolkitBase
@@ -201,10 +207,67 @@ class CfwImageToolkit extends ImageToolkitBase
 	 * so a toolkit that omits them is not a loadable class at all. `php -l` cannot
 	 * see that -- it is a linkage error against real Drupal, raised the first time
 	 * something autoloads the class -- and this file was "lint-clean" for a day with
-	 * a guaranteed fatal in it. There is nothing to configure, so the form is empty.
+	 * a guaranteed fatal in it.
+	 *
+	 * A REPORT RATHER THAN A FORM, and it submits nothing. The one real choice here is which engine
+	 * encodes, and that is a Worker lever rather than site configuration: it belongs to the
+	 * deployment, is shared by every site on it, and is settable without a redeploy from the
+	 * Drupflare settings page. What this page owes an operator is which engine is in force and what
+	 * it can encode, which is what the page previously did not say at all.
 	 */
 	public function buildConfigurationForm(array $form, FormStateInterface $form_state)
 	{
+		// READ FROM THE HOST, NOT DERIVED FROM A NAME. `getSupportedExtensions()` below records why:
+		// deriving capability from the engine name pinned the wasm arm to whatever it encoded the day
+		// the line was written, and tinyimg 1.1 added AVIF with every shipped style still degrading
+		// to webp. The same argument applies to which engine is running at all.
+		$reply = Host::call('cfwImageUrl', [
+			'uri' => 'public://cfw-capability-probe.png',
+			'transform' => ['width' => 1],
+		]);
+		$engine = (string) ($reply['engine'] ?? '');
+		$extensions = $reply['extensions'] ?? [];
+
+		$names = [
+			'tinyimg' => new TranslatableMarkup(
+				'Worker-side encoder, which runs in the front worker',
+			),
+			'images' => new TranslatableMarkup(
+				'Cloudflare Images, which resizes on delivery from a URL',
+			),
+		];
+
+		$form['engine'] = [
+			'#type' => 'item',
+			'#title' => new TranslatableMarkup('Engine'),
+			'#markup' =>
+				$engine === ''
+					? new TranslatableMarkup(
+						'The runtime did not report an engine, so this site is not being served by a Worker.',
+					)
+					: $names[$engine] ??
+						new TranslatableMarkup('An engine this module does not recognise: @id', [
+							'@id' => $engine,
+						]),
+			'#description' => new TranslatableMarkup(
+				'Set by the <code>IMAGE_ENGINE</code> runtime lever rather than here, because it belongs to the Worker and not to this site. It can be changed without a redeploy from the Drupflare settings page.',
+			),
+		];
+
+		$form['formats'] = [
+			'#type' => 'item',
+			'#title' => new TranslatableMarkup('Formats this engine encodes'),
+			'#markup' =>
+				is_array($extensions) && $extensions !== []
+					? implode(', ', array_map('strval', $extensions))
+					: new TranslatableMarkup('none reported'),
+			'#description' => new TranslatableMarkup(
+				'Read from the engine rather than assumed. An image style asking for a format absent from this list falls back rather than failing.',
+			),
+		];
+
+		// derivatives are never written, so there is no quality or resampling setting to store; the
+		// two items above are a report rather than a form and submit nothing
 		return $form;
 	}
 

@@ -65,6 +65,12 @@ final class StatusController extends ControllerBase
 				),
 				(string) $this->t('Generation') => self::plain($stats['generation'] ?? null),
 				(string) $this->t('Invalidations') => self::plain($stats['bumps'] ?? null),
+				// the rollback unit. The platform fills CF_VERSION_METADATA in for free and the
+				// only reader was the fleet inventory write, so an operator could not find out
+				// which Worker was serving their site from anywhere in the product
+				(string) $this->t('Worker version') => self::plain(
+					$stats['workerVersion']['id'] ?? null,
+				),
 			]),
 			'replica' => self::table((string) $this->t('Read Replica Pool'), [
 				(string) $this->t('Role') => self::plain($stats['replica']['role'] ?? null),
