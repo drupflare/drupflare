@@ -1,0 +1,11 @@
+drupflare.status:
+  title: 'Runtime Status'
+  route_name: drupflare.status
+  base_route: drupflare.status
+  weight: 0
+
+drupflare.ops_terminal:
+  title: 'Operations'
+  route_name: drupflare.ops_terminal
+  base_route: drupflare.status
+  weight: 10

@@ -24,7 +24,7 @@ drupflare.admin:
     _controller: '\Drupal\system\Controller\SystemController::systemAdminMenuBlockPage'
     _title: 'Drupflare'
   requirements:
-    _permission: 'administer site configuration'
+    _permission: 'administer drupflare+administer site configuration'
   options:
     _admin_route: true
 
@@ -34,6 +34,6 @@ drupflare.status:
     _controller: '\Drupal\drupflare\Controller\StatusController::page'
     _title: 'Runtime Status'
   requirements:
-    _permission: 'administer site configuration'
+    _permission: 'view drupflare status+administer site configuration'
   options:
     _admin_route: true
