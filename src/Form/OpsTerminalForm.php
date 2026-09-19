@@ -141,9 +141,46 @@ final class OpsTerminalForm extends FormBase
 			$this->messenger()->addWarning((string) $parsed['error']);
 			return;
 		}
+		if (
+			self::deliversCode($parsed) &&
+			!$this->currentUser()->hasPermission('administer drupflare code')
+		) {
+			$form_state->set('parsed', [
+				'ok' => false,
+				'error' => 'code delivery is not permitted',
+			]);
+			$this->messenger()->addWarning(
+				$this->t(
+					'@what delivers code this site did not ship with, which needs the "Deliver Drupflare code" permission.',
+					[
+						'@what' => self::name($parsed),
+					],
+				),
+			);
+			return;
+		}
 		$this->messenger()->addStatus(
 			$this->t('@op resolved. Nothing has run yet.', ['@op' => $parsed['op']]),
 		);
+	}
+
+	/**
+	 * Whether a parsed line delivers code the site did not ship with.
+	 *
+	 * A package line installs from a registry; `en` installs a module, which on this platform means
+	 * mounting a tree the pack does not carry. Both are a different trust level from rebuilding a
+	 * cache, which is why they have their own permission -- a site can grant the operations terminal
+	 * without granting the ability to add code to the runtime.
+	 *
+	 * @param array $parsed
+	 *   A successful parse result.
+	 *
+	 * @return bool
+	 *   TRUE when the line delivers code.
+	 */
+	private static function deliversCode(array $parsed): bool
+	{
+		return $parsed['kind'] === 'package' || ($parsed['op'] ?? '') === 'en';
 	}
 
 	/**
@@ -156,6 +193,19 @@ final class OpsTerminalForm extends FormBase
 			// the run button only exists after a successful check, so this is a resubmitted form
 			// rather than a user error
 			$this->messenger()->addWarning($this->t('Check the command again before running it.'));
+			$form_state->setRebuild(true);
+			return;
+		}
+
+		if (
+			self::deliversCode($parsed) &&
+			!$this->currentUser()->hasPermission('administer drupflare code')
+		) {
+			// re-checked at the RUN rather than trusted from the check: the parse rides in form
+			// state across a rebuild, so a permission revoked in between would otherwise be missed
+			$this->messenger()->addError(
+				$this->t('Code delivery is not permitted for this account.'),
+			);
 			$form_state->setRebuild(true);
 			return;
 		}

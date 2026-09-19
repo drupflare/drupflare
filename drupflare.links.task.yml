@@ -9,3 +9,21 @@ drupflare.ops_terminal:
   route_name: drupflare.ops_terminal
   base_route: drupflare.status
   weight: 10
+
+drupflare.settings:
+  title: 'Settings'
+  route_name: drupflare.settings
+  base_route: drupflare.status
+  weight: 5
+
+drupflare.modules:
+  title: 'Code Delivery'
+  route_name: drupflare.modules
+  base_route: system.modules_list
+  weight: 20
+
+system.modules_list:
+  title: 'List'
+  route_name: system.modules_list
+  base_route: system.modules_list
+  weight: 0

@@ -37,3 +37,23 @@ drupflare.status:
     _permission: 'view drupflare status+administer site configuration'
   options:
     _admin_route: true
+
+drupflare.settings:
+  path: '/admin/config/drupflare/settings'
+  defaults:
+    _form: 'Drupal\drupflare\Form\SettingsForm'
+    _title: 'Runtime Settings'
+  requirements:
+    _permission: 'administer drupflare settings'
+  options:
+    _admin_route: true
+
+drupflare.modules:
+  path: '/admin/modules/drupflare'
+  defaults:
+    _controller: '\Drupal\drupflare\Controller\ModulesController::page'
+    _title: 'Code Delivery'
+  requirements:
+    _permission: 'administer drupflare code'
+  options:
+    _admin_route: true
