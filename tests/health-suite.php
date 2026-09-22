@@ -126,7 +126,9 @@ use Drupal\Core\Database\Connection;
 use Drupal\Core\Site\Settings;
 use Drupal\Component\Datetime\Time;
 use Drupal\Component\Serialization\PhpSerialize;
+use Drupal\Core\Cache\Cache;
 use Drupal\drupflare\Cache\CfwCacheBackend;
+use Drupal\drupflare\Cache\CfwMemoryBackend;
 use Drupal\drupflare\Plugin\Mail\CfwMail;
 use Drupal\Core\Extension\Requirement\RequirementSeverity;
 use Drupal\Core\State\StateInterface;
@@ -2624,6 +2626,34 @@ function cache_factory(?int $maxRows = null): CfwCacheBackendFactory
 	return $factory;
 }
 
+/**
+ * The same factory with a memory-bin selection in its settings.
+ *
+ * @param array $bins
+ *   Bare bin names the interpreter should hold.
+ *
+ * @return CfwCacheBackendFactory
+ *   A factory that answers those bins in memory and the rest from the database.
+ */
+function memory_cache_factory(array $bins): CfwCacheBackendFactory
+{
+	$factory = (new ReflectionClass(
+		CfwCacheBackendFactory::class,
+	))->newInstanceWithoutConstructor();
+	$parent = new ReflectionClass(DatabaseBackendFactory::class);
+	$values = [
+		'connection' => new StubConnection(),
+		'checksumProvider' => new StubChecksum(),
+		'settings' => new Settings(['drupflare' => ['memory_cache_bins' => $bins]]),
+		'serializer' => new PhpSerialize(),
+		'time' => new Time(),
+	];
+	foreach ($values as $name => $value) {
+		$parent->getProperty($name)->setValue($factory, $value);
+	}
+	return $factory;
+}
+
 $factory = cache_factory();
 $backend = $factory->get('render');
 // core's factory constructs DatabaseBackend directly rather than resolving a class name, so a
@@ -2658,6 +2688,130 @@ ok(
 	'CONTROL: with nothing configured the cap is core\'s default',
 	(new ReflectionProperty(DatabaseBackend::class, 'maxRows'))->getValue($backend) ===
 		DatabaseBackend::DEFAULT_MAX_ROWS,
+);
+// #endregion
+// #region the cache bin that lives in the interpreter
+echo "\n# the in-memory cache bin, and the checksum a replica depends on\n";
+
+/**
+ * A checksum provider whose counters can be moved without anything being told.
+ *
+ * That is the whole point of the class under test: a read replica receives an invalidation as a
+ * replayed `cachetags` statement, never as a PHP call, so a bin that learns about invalidations by
+ * being called would serve invalidated content on a lane forever.
+ */
+class MovableChecksum implements CacheTagsChecksumInterface
+{
+	/**
+	 * Current count per tag.
+	 *
+	 * @var array
+	 */
+	public $counts = [];
+
+	/**
+	 * {@inheritdoc}
+	 */
+	public function getCurrentChecksum(array $tags)
+	{
+		$sum = 0;
+		foreach ($tags as $tag) {
+			$sum += $this->counts[$tag] ?? 0;
+		}
+		return $sum;
+	}
+
+	/**
+	 * {@inheritdoc}
+	 */
+	public function isValid($checksum, array $tags)
+	{
+		return $checksum === $this->getCurrentChecksum($tags);
+	}
+
+	/**
+	 * {@inheritdoc}
+	 */
+	public function reset() {}
+
+	/**
+	 * {@inheritdoc}
+	 */
+	public function invalidateTags(array $tags) {}
+}
+
+CfwMemoryBackend::reset();
+$checksum = new MovableChecksum();
+$mem = new CfwMemoryBackend('cache_probe', $checksum, 3);
+
+$mem->set('a', 'first', Cache::PERMANENT, ['node_list']);
+ok('an item set is an item returned', $mem->get('a')->data === 'first');
+ok('and a cid nobody stored is a miss', $mem->get('absent') === false);
+
+// THE PROPERTY A LANE DEPENDS ON: nothing calls the backend, the counter simply moves
+$checksum->counts['node_list'] = 1;
+ok(
+	'a moved tag counter invalidates the item with nothing told to the bin',
+	$mem->get('a') === false,
+);
+ok(
+	'and allow_invalid still hands it back, the way core\'s backends do',
+	$mem->get('a', true)->data === 'first',
+);
+// re-storing takes the current checksum, so the entry is live again
+$mem->set('a', 'second', Cache::PERMANENT, ['node_list']);
+ok('re-storing picks up the current checksum', $mem->get('a')->data === 'second');
+
+// AND IT SURVIVES THE OBJECT, which is what makes this a tier rather than a per-request memo.
+// `pib_run` performs no request shutdown, so a class static outlives one Worker invocation
+$second = new CfwMemoryBackend('cache_probe', $checksum, 3);
+ok(
+	'a second backend on the same bin sees what the first stored',
+	$second->get('a')->data === 'second',
+);
+ok(
+	'CONTROL: another bin does not',
+	(new CfwMemoryBackend('cache_other', $checksum, 3))->get('a') === false,
+);
+
+// BOUNDED, and core's MemoryBackend is not. The isolate is 128 MiB and the worst measured
+// workload peaks at 92.69, so an unbounded bin spends the headroom the interpreter needs
+$mem->set('b', 'B', Cache::PERMANENT, []);
+$mem->set('c', 'C', Cache::PERMANENT, []);
+$mem->set('d', 'D', Cache::PERMANENT, []);
+ok('the bound drops the oldest entry', $mem->get('a') === false);
+ok('and keeps the newest', $mem->get('d')->data === 'D');
+ok('at exactly the configured size', CfwMemoryBackend::counts()['cache_probe'] === 3);
+// re-setting moves an entry to the end of the order, so what is dropped is what has been idle
+// longest rather than what was first stored
+$mem->set('b', 'B2', Cache::PERMANENT, []);
+$mem->set('e', 'E', Cache::PERMANENT, []);
+ok('a re-set entry survives the next eviction', $mem->get('b')->data === 'B2');
+ok('and the entry it displaced is the idle one', $mem->get('c') === false);
+
+// expiry, invalidation and the two deletes
+$mem->set('t', 'T', (int) round(microtime(true)) - 10, []);
+ok('an expired item is a miss', $mem->get('t') === false);
+$mem->set('u', 'U', Cache::PERMANENT, []);
+$mem->invalidate('u');
+ok('an explicitly invalidated item is a miss', $mem->get('u') === false);
+$mem->set('v', 'V', Cache::PERMANENT, []);
+$mem->delete('v');
+ok('a deleted item is gone rather than invalid', $mem->get('v', true) === false);
+$mem->deleteAll();
+ok('deleteAll empties the bin', CfwMemoryBackend::counts()['cache_probe'] === 0);
+CfwMemoryBackend::reset();
+
+// THE FACTORY SELECTS IT, and it is the factory already in the compiled container rather than a
+// service of its own -- a service name is resolved out of that container, the pack ships it
+// prebuilt, and its cache key does not move when the driver pack does
+$plain = cache_factory()->get('dynamic_page_cache');
+ok('with nothing selected the bin is still the database one', $plain instanceof CfwCacheBackend);
+$selected = memory_cache_factory(['dynamic_page_cache'])->get('dynamic_page_cache');
+ok('a selected bin comes back in memory', $selected instanceof CfwMemoryBackend);
+ok(
+	'CONTROL: a bin that was not selected is unaffected',
+	memory_cache_factory(['dynamic_page_cache'])->get('render') instanceof CfwCacheBackend,
 );
 // #endregion
 // #region the guzzle fetch handler
