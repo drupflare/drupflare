@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\drupflare\Cache;
 
+use Drupal\Core\Cache\CacheBackendInterface;
 use Drupal\Core\Cache\DatabaseBackendFactory;
 
 /**
@@ -32,7 +33,14 @@ use Drupal\Core\Cache\DatabaseBackendFactory;
 class CfwCacheBackendFactory extends DatabaseBackendFactory
 {
 	/**
-	 * {@inheritdoc}
+	 * A backend for one bin, held in memory when settings name it.
+	 *
+	 * @param string $bin
+	 *   The bin name, without the cache_ prefix.
+	 *
+	 * @return CacheBackendInterface
+	 *   The factory interface's type rather than the parent's, because a memory bin is not a
+	 *   DatabaseBackend.
 	 */
 	public function get($bin)
 	{

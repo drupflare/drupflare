@@ -84,7 +84,7 @@ final class SettingsForm extends FormBase
 		} catch (Exception $e) {
 			return ['ok' => false, 'error' => $e->getMessage()];
 		}
-		return is_array($reply) ? $reply : ['ok' => false, 'error' => 'the host returned no reply'];
+		return $reply;
 	}
 
 	/**
@@ -221,12 +221,10 @@ final class SettingsForm extends FormBase
 			return;
 		}
 
-		if (!is_array($reply) || empty($reply['ok'])) {
+		if (empty($reply['ok'])) {
 			$this->messenger()->addError(
 				$this->t('The save was refused: @why', [
-					'@why' => (string) (is_array($reply)
-						? $reply['error'] ?? 'unknown'
-						: 'no reply'),
+					'@why' => (string) ($reply['error'] ?? 'unknown'),
 				]),
 			);
 			return;

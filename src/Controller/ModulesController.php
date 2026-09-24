@@ -35,7 +35,7 @@ final class ModulesController extends ControllerBase
 		} catch (Exception) {
 			return null;
 		}
-		return is_array($reply) && !empty($reply['ok']) ? $reply : null;
+		return !empty($reply['ok']) ? $reply : null;
 	}
 
 	/**
