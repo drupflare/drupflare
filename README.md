@@ -1,6 +1,6 @@
 # 🔌 drupflare
 
-> Drupal 11 module that satisfies platform needs with Cloudflare Workers bindings
+> CMS module that satisfies platform needs with Cloudflare Workers bindings
 
 [![Build](https://github.com/drupflare/drupflare/actions/workflows/build.yml/badge.svg)](https://github.com/drupflare/drupflare/actions/workflows/build.yml)
 [![Prettier](https://github.com/drupflare/drupflare/actions/workflows/prettier.yml/badge.svg)](https://github.com/drupflare/drupflare/actions/workflows/prettier.yml)
@@ -54,6 +54,7 @@ Images and Workers Logs. Drupal's mail system, image toolkit, HTTP transport and
 | `Logger\CfwLogger`                    | `dblog` as the only sink                 | `cfwLog`                                           |
 | `StreamWrapper\HttpsStreamWrapper`    | the absent `https://` wrapper            | `cfwFetch`                                         |
 | `StreamWrapper\CfwFileStreamWrapper`  | MEMFS for `public://` and `private://`   | the `cfwFile*` family                              |
+| `File\CfwFileSystem`                  | `move_uploaded_file()`                   | the temp paths the host's multipart parser wrote   |
 | `Queue\CfwDeferredHttp`               | a blocking HTTP client                   | `cfwHttpCacheGet`, `cfwQueueFetch`, `cfwFetchSync` |
 | `Http\CachedFetchHandler`             | Guzzle's curl handler                    | the same three                                     |
 | `Http\FetchHandler`                   | curl / the stream handler                | `cfHost` (**needs JSPI, not exercised**)           |
@@ -80,6 +81,11 @@ as successful-but-deferred so image styles do not fail. The pixels are produced 
 encoder running in the Worker or by Cloudflare Images depending on which engine the deployment
 selects. A style-derived file on disk is therefore the original, so contrib that reads a derivative's
 own pixels sees full-size images. Drupal core does not.
+
+`ImageDelivery` implements `hook_file_url_alter` and rewrites a style URL to the delivery path, with
+the style's size, fit and format in the query, so a page links to the resized image rather than the
+copy on disk. It maps `image_scale`, `image_scale_and_crop`, `image_resize`, `image_convert` and
+`image_convert_avif`; a style carrying any other effect keeps its ordinary URL.
 
 `getSupportedExtensions()` reports what the selected engine can actually encode, and that honesty
 decides whether AVIF styles work. All four shipped styles are `image_scale` plus `image_convert_avif`,
@@ -237,9 +243,9 @@ persistent kernel is about to serve stale pages, so treat it as a failure rather
 
 | Lane                       | Command                                    | Count    | Needs                              |
 | -------------------------- | ------------------------------------------ | -------- | ---------------------------------- |
-| syntax                     | `php tests/lint.php`                       | 61 files | nothing but PHP                    |
-| the health layer           | `php tests/health-suite.php`               | **667**  | nothing but PHP                    |
-| class loading and refusals | `php tests/load-classes.php <drupal-root>` | **104**  | a Drupal 11.3+ root with `vendor/` |
+| syntax                     | `php tests/lint.php`                       | 70 files | nothing but PHP                    |
+| the health layer           | `php tests/health-suite.php`               | **744**  | nothing but PHP                    |
+| class loading and refusals | `php tests/load-classes.php <drupal-root>` | **110**  | a Drupal 11.3+ root with `vendor/` |
 | the capabilities executing | `curl localhost:8787/capability`           | **26**   | `drupflare/worker` running         |
 
 Each suite ends in `exit()`, so coverage runs one per process. With no suite named it runs them
@@ -310,7 +316,8 @@ Properties of the runtime.
   stats speculatively.
 - **Mail is one-way.** The binding takes `to`, `from`, `replyTo`, `subject`, `text` and `html` and
   rejects unknown headers, so only `Cc`, `Bcc`, `In-Reply-To` and `References` pass through.
-- **An image style produces no derivative file.** See `CfwImageToolkit` above.
+- **A style with an effect the delivery path cannot express serves the original.** Crop, rotate and
+  desaturate are among them. See `ImageDelivery` above.
 - **`Host::call()` cannot carry a wide integer as a number.** It goes through `pw_encode()` and
   arrives as a decimal string or a codec envelope; a plain number above 2^53 comes back rounded,
   because the envelope is JSON and a JSON number is a double.
@@ -344,7 +351,7 @@ composer run analyze    # phpstan level 5, --memory-limit=1G
 bunx prettier --check . # layout, every language including PHP
 
 php tests/health-suite.php
-DRUPAL_ROOT=/path/to/drupal php tests/load-classes.php # 104; loads every class for real
+DRUPAL_ROOT=/path/to/drupal php tests/load-classes.php # 110; loads every class for real
 ```
 
 Layout is Prettier's, tabs rendered 4 wide at `printWidth` 100. `phpcs.xml.dist` gives up the sniffs

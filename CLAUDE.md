@@ -13,8 +13,8 @@ Published as `drupflare/drupflare`; consumed by `drupflare/worker`.
 `node_modules/` stay out of the bundle. `DRUPFLARE_SRC` relocates it, which is how CI points at
 `.siblings/`. So:
 
-- **This repo's suite is the authority on behaviour.** `php tests/health-suite.php` - **667**
-  assertions, plus `DRUPAL_ROOT=<worker>/drupal-src php tests/load-classes.php` - **104**.
+- **This repo's suite is the authority on behaviour.** `php tests/health-suite.php` - **744**
+  assertions, plus `DRUPAL_ROOT=<worker>/drupal-src php tests/load-classes.php` - **110**.
   Re-measure before quoting either; both have been stale here in both directions.
 - **Run the worker's `bun run assets:driver` after any change here**, or the packed copy goes stale -
   it has done so twice. `worker/tests/node/driver-pack.spec.ts` asserts `assets/driver.json` matches
@@ -33,7 +33,7 @@ checkout: `php tests/load-classes.php` fatals on 11.0.0, 11.1.0 and 11.2.0 and p
 11.3.0. No 11.2.x patch backported the trait.
 
 PHP **8.3 or newer**, matrixed across 8.3, 8.4 and 8.5 in `build.yml`, matching `rom` and
-`stream-http`. Measured on 8.5.7 with `error_reporting=E_ALL`: 667 health and 104 class-loading
+`stream-http`. Measured on 8.5.7 with `error_reporting=E_ALL`: 744 health and 110 class-loading
 assertions pass with no deprecation notices, and `src/` carries no implicit nullable parameters or
 dynamic properties.
 
