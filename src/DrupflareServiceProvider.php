@@ -13,6 +13,8 @@ use Drupal\drupflare\Http\FetchHandler;
 use Drupal\drupflare\Http\ParkFetchHandler;
 use Drupal\Core\Cache\Context\CacheContextsManager;
 use Drupal\Core\Cache\DatabaseBackendFactory;
+use Drupal\Core\File\FileSystem;
+use Drupal\drupflare\File\CfwFileSystem;
 use Drupal\Core\Lock\DatabaseLockBackend;
 use Drupal\Core\Lock\PersistentDatabaseLockBackend;
 use Drupal\Core\Routing\MatcherDumper;
@@ -55,6 +57,7 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 		$this->registerCacheContextsManager($container);
 		$this->registerLockBackend($container);
 		$this->registerPassword($container);
+		$this->registerFileSystem($container);
 
 		// BEFORE the early return below, and it was after. `registerResetter()` overrides the
 		// one-argument definition in `drupflare.services.yml` with the real two-argument one; a
@@ -184,6 +187,24 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 			(bool) Settings::get('drupflare.argon2', false),
 		]);
 		$container->setDefinition('password', $decorated);
+	}
+
+	/**
+	 * Points `file_system` at the subclass that can move an upload the host parsed.
+	 *
+	 * Guarded on the class like every other swap here, so a site that replaced the service keeps
+	 * its own.
+	 */
+	private function registerFileSystem(ContainerBuilder $container): void
+	{
+		if (!$container->hasDefinition('file_system')) {
+			return;
+		}
+		$definition = $container->getDefinition('file_system');
+		if ($definition->getClass() !== FileSystem::class) {
+			return;
+		}
+		$definition->setClass(CfwFileSystem::class);
 	}
 
 	/**

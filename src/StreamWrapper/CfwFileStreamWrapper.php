@@ -105,6 +105,13 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	private int $entryAt = 0;
 
 	/**
+	 * Directories `mkdir()` made, keyed by uri with no trailing slash.
+	 *
+	 * @var array<string, true>
+	 */
+	private static array $made = [];
+
+	/**
 	 * Registers this wrapper for every scheme it owns, replacing anything present.
 	 *
 	 * @return array
@@ -360,15 +367,20 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	/**
 	 * Describes a path without opening it, for `file_exists()`, `filesize()` and `is_dir()`.
 	 *
-	 * A DIRECTORY is reported as one when any stored file sits under it. There are no directory
-	 * records -- storage is a flat keyspace -- so a directory exists exactly when it has contents,
-	 * which is the same rule an object store uses and is what `file_prepare_directory()` needs.
+	 * A DIRECTORY is reported as one when any stored file sits under it, or when `mkdir()` made it.
+	 * There are no directory records, because storage is a flat keyspace, so an empty directory
+	 * exists only in memory. `FileSystem::move()` and `copy()` check the destination directory
+	 * without creating it, so every move into a new directory threw `DirectoryNotReadyException`
+	 * until the second case was added. That included every upload and `FileRepository::writeData()`.
 	 */
 	public function url_stat($path, $flags): array|false
 	{
 		$reply = Host::call('cfwFileStat', ['uri' => $path]);
 		if (($reply['ok'] ?? false) === true) {
 			return self::statArray((int) ($reply['size'] ?? 0), (int) ($reply['modified'] ?? 0));
+		}
+		if (isset(self::$made[rtrim($path, '/')])) {
+			return self::statArray(0, 0, 040755);
 		}
 		$prefix = rtrim($path, '/') . '/';
 		$listing = Host::call('cfwFileList', ['prefix' => $prefix, 'limit' => 1]);
@@ -405,14 +417,17 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	}
 
 	/**
-	 * Creates a directory, which is a no-op that must still report success.
+	 * Creates a directory, which stores nothing and is remembered for `url_stat()`.
 	 *
-	 * Storage is a flat keyspace with no directory records, so there is nothing to create -- but
-	 * `mkdir()` returning FALSE would make `file_prepare_directory()` refuse the whole write, and a
-	 * directory that "exists" as soon as something is in it is the same model an object store uses.
+	 * Storage is a flat keyspace with no directory records, so there is nothing to write. The path
+	 * and its ancestors are remembered for the life of the interpreter, which is how long a real
+	 * empty directory would have lasted between requests.
 	 */
 	public function mkdir($path, $mode, $options): bool
 	{
+		for ($dir = rtrim($path, '/'); str_contains($dir, '://'); $dir = dirname($dir)) {
+			self::$made[$dir] = true;
+		}
 		return true;
 	}
 
@@ -421,6 +436,7 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	 */
 	public function rmdir($path, $options): bool
 	{
+		unset(self::$made[rtrim($path, '/')]);
 		$prefix = rtrim($path, '/') . '/';
 		$listing = Host::call('cfwFileList', ['prefix' => $prefix]);
 		$files = is_array($listing['files'] ?? null) ? $listing['files'] : [];

@@ -51,10 +51,14 @@ use Drupal\drupflare\Plugin\Mail\CfwMail;
 use Drupal\drupflare\Cache\CfwCacheBackend;
 use Drupal\drupflare\Cache\CfwCacheBackendFactory;
 use Drupal\drupflare\Cache\MemoizedCacheContextsManager;
+use Drupal\drupflare\File\CfwFileSystem;
+use Drupal\Core\Site\Settings;
+use Drupal\Core\StreamWrapper\StreamWrapperManager;
 use Drupal\drupflare\Routing\CfwMatcherDumper;
 use Drupal\drupflare\StreamWrapper\HttpsStreamWrapper;
 use Drupflare\StreamHttp\HttpsStreamWrapper as BaseHttpsStreamWrapper;
 use Psr\Log\LoggerInterface;
+use Symfony\Component\DependencyInjection\ServiceLocator;
 use Symfony\Component\Routing\Route;
 use Symfony\Component\Routing\RouteCollection;
 use Symfony\Component\Yaml\Yaml;
@@ -702,6 +706,38 @@ $ab = $memoOrder->convertTokensToKeys(['probe', 'other']);
 $ba = $memoOrder->convertTokensToKeys(['other', 'probe']);
 ok('token order does not split the memo', $ab === $ba);
 
+// #endregion
+// #region moving a parsed upload
+echo "\nMoving a parsed upload\n";
+
+$uploadFs = new CfwFileSystem(new StreamWrapperManager(new ServiceLocator([])), new Settings([]));
+$uploadDir = sys_get_temp_dir() . '/cfw-upload-' . bin2hex(random_bytes(4));
+mkdir($uploadDir);
+
+$registered = $uploadDir . '/registered';
+file_put_contents($registered, 'uploaded bytes');
+$GLOBALS['__cfw_uploads'] = [$registered => true];
+ok(
+	'a path the host registered moves',
+	$uploadFs->moveUploadedFile($registered, $uploadDir . '/moved'),
+);
+ok('with its bytes', file_get_contents($uploadDir . '/moved') === 'uploaded bytes');
+ok('and leaves the list, so it cannot move twice', !isset($GLOBALS['__cfw_uploads'][$registered]));
+
+// the control: move_uploaded_file() refuses any file this process did not receive as an upload
+$stranger = $uploadDir . '/stranger';
+file_put_contents($stranger, 'not an upload');
+ok(
+	'any other path is refused as core refuses it',
+	!$uploadFs->moveUploadedFile($stranger, $uploadDir . '/taken'),
+);
+ok('and stays where it was', is_file($stranger) && !is_file($uploadDir . '/taken'));
+
+foreach (glob($uploadDir . '/*') as $leftover) {
+	unlink($leftover);
+}
+rmdir($uploadDir);
+unset($GLOBALS['__cfw_uploads']);
 // #endregion
 
 printf("\n%d passed, %d failed\n", $pass, $fail);

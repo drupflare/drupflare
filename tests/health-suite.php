@@ -76,6 +76,7 @@ function ok(string $label, bool $condition, string $detail = ''): void
 }
 
 use Drupal\drupflare\Degradation;
+use Drupal\drupflare\Image\DeliveryTransform;
 use Drupal\drupflare\Ops\CommandLine;
 use Drupal\drupflare\Health\BootSelfTest;
 use Drupal\drupflare\Health\CircuitBreaker;
@@ -100,6 +101,7 @@ use Drupal\Component\Utility\Html;
 use Drupal\Core\Cache\DatabaseBackendFactory;
 use Drupal\Core\DependencyInjection\ContainerBuilder;
 use Drupal\Core\DrupalKernel;
+use Drupal\Core\File\FileSystem;
 use Drupal\Core\Form\FormState;
 use Drupal\Core\Lock\DatabaseLockBackend;
 use Drupal\Core\Lock\PersistentDatabaseLockBackend;
@@ -110,6 +112,7 @@ use Drupal\Core\Session\UserSession;
 use Drupal\Core\StreamWrapper\StreamWrapperInterface;
 use Drupal\drupflare\Cache\CfwCacheBackendFactory;
 use Drupal\drupflare\DrupflareServiceProvider;
+use Drupal\drupflare\File\CfwFileSystem;
 use Drupal\drupflare\Host;
 use Drupal\drupflare\Http\CachedFetchHandler;
 use Drupal\drupflare\Http\FetchHandler;
@@ -1852,6 +1855,10 @@ function core_container(): ContainerBuilder
 		(new Definition(PersistentDatabaseLockBackend::class))->setArguments(['@database']),
 	);
 	$container->setDefinition('http_handler_stack', new Definition(HandlerStack::class));
+	$container->setDefinition(
+		'file_system',
+		(new Definition(FileSystem::class))->setArguments(['@stream_wrapper_manager', '@settings']),
+	);
 	return $container;
 }
 
@@ -1882,6 +1889,17 @@ ok(
 // core passes '@database'; this backend takes nothing, and a leftover argument is a fatal
 ok('the core argument is cleared', $container->getDefinition('lock')->getArguments() === []);
 ok('and the lazy flag with it', $container->getDefinition('lock')->isLazy() === false);
+ok(
+	'file_system becomes the subclass that can move a parsed upload',
+	$container->getDefinition('file_system')->getClass() === CfwFileSystem::class,
+);
+ok(
+	'with core arguments kept',
+	$container->getDefinition('file_system')->getArguments() === [
+		'@stream_wrapper_manager',
+		'@settings',
+	],
+);
 
 // FetchHandler is guarded: on an ASYNCIFY=0, non-JSPI build it is a guaranteed
 // "ReferenceError: Asyncify is not defined" the first time anything calls httpClient().
@@ -1950,7 +1968,12 @@ $container = core_container();
 $container->getDefinition('router.dumper')->setClass(ResettableSpy::class);
 $container->getDefinition('cache.backend.database')->setClass(ResettableSpy::class);
 $container->getDefinition('lock')->setClass(ResettableSpy::class);
+$container->getDefinition('file_system')->setClass(ResettableSpy::class);
 (new DrupflareServiceProvider())->register($container);
+ok(
+	'an already-overridden file_system is left alone',
+	$container->getDefinition('file_system')->getClass() === ResettableSpy::class,
+);
 ok(
 	'an already-overridden router.dumper is left alone',
 	$container->getDefinition('router.dumper')->getClass() === ResettableSpy::class,
@@ -2243,6 +2266,16 @@ clearstatcache();
 ok('a prefix with contents under it stats as a directory', is_dir('public://styles'));
 clearstatcache();
 ok('and one with nothing under it does not', !is_dir('public://empty-dir'));
+
+// FileSystem::move() checks the destination directory without creating it, so an empty directory
+// that did not stat as one made every move into a new directory throw
+ok(
+	'a directory mkdir made stats as one while empty',
+	mkdir('public://fresh/2026-09', 0777, true) && is_dir('public://fresh/2026-09'),
+);
+clearstatcache();
+ok('and so does its parent', is_dir('public://fresh'));
+ok('rmdir forgets it', rmdir('public://fresh/2026-09') && !is_dir('public://fresh/2026-09'));
 
 $entries = array_values(array_diff((array) scandir('public://styles'), ['.', '..']));
 sort($entries);
@@ -4781,6 +4814,54 @@ ok(
 	'the record carries a schema, so a host reading an older one can refuse it',
 	$mixed['schema'] === \Drupal\drupflare\Update\AdvisoryScan::SCHEMA && $mixed['at'] === 100,
 	json_encode(['schema' => $mixed['schema'], 'at' => $mixed['at']]),
+);
+// #endregion
+
+// #region image styles as one delivery transform
+$shipped = DeliveryTransform::fromEffects([
+	['id' => 'image_scale', 'data' => ['width' => 220, 'height' => 220, 'upscale' => false]],
+	['id' => 'image_convert_avif', 'data' => ['extension' => 'webp']],
+]);
+ok(
+	'a shipped style maps to a scale-down avif transform',
+	$shipped === ['width' => 220, 'height' => 220, 'fit' => 'scale-down', 'format' => 'avif'],
+	json_encode($shipped),
+);
+ok(
+	'a width-only scale keeps its height open',
+	DeliveryTransform::fromEffects([
+		['id' => 'image_scale', 'data' => ['width' => 1090, 'height' => null, 'upscale' => false]],
+	]) === ['width' => 1090, 'fit' => 'scale-down'],
+);
+ok(
+	'crop maps to cover and an upscaling scale to inside',
+	DeliveryTransform::fromEffects([
+		['id' => 'image_scale_and_crop', 'data' => ['width' => 100, 'height' => 100]],
+	])['fit'] === 'cover' &&
+		DeliveryTransform::fromEffects([
+			['id' => 'image_scale', 'data' => ['width' => 50, 'upscale' => true]],
+		])['fit'] === 'inside',
+);
+ok(
+	'a chain one transform cannot state keeps its stock URL',
+	DeliveryTransform::fromEffects([['id' => 'image_desaturate', 'data' => []]]) === null &&
+		DeliveryTransform::fromEffects([
+			['id' => 'image_scale', 'data' => ['width' => 10]],
+			['id' => 'image_resize', 'data' => ['width' => 5, 'height' => 5]],
+		]) === null &&
+		DeliveryTransform::fromEffects([]) === null,
+);
+$toAvif = fn(string $extension): string => 'avif';
+$keep = fn(string $extension): string => $extension;
+ok(
+	'the extension a converting style appends is stripped to recover the source',
+	DeliveryTransform::sourcePath('2026-09/cat.jpg.avif', $toAvif) === '2026-09/cat.jpg',
+);
+ok(
+	'a path the style did not rename is left alone',
+	DeliveryTransform::sourcePath('cat.jpg', $keep) === 'cat.jpg' &&
+		DeliveryTransform::sourcePath('cat.png.avif', $keep) === 'cat.png.avif' &&
+		DeliveryTransform::sourcePath('photo.avif', $toAvif) === 'photo.avif',
 );
 // #endregion
 
