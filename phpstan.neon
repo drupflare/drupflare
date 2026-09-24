@@ -19,3 +19,6 @@ parameters:
         # files above: the real definitions from the real dependency rather than a stub that drifts.
         - vendor/drupal/core/modules/user/src/Entity/Role.php
         - vendor/drupal/core/modules/user/src/Entity/User.php
+    scanDirectories:
+        # Hook\ImageDelivery reads image styles; same reason as the user entities above
+        - vendor/drupal/core/modules/image/src
