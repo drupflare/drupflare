@@ -35,6 +35,42 @@ use XMLWriter;
 final class Requirements
 {
 	/**
+	 * Core's required extensions (`SystemRequirementsHooks`), less gd.
+	 */
+	private const CORE_EXTENSIONS = [
+		'date',
+		'dom',
+		'filter',
+		'hash',
+		'json',
+		'pcre',
+		'pdo',
+		'session',
+		'SimpleXML',
+		'SPL',
+		'tokenizer',
+		'xml',
+		'zlib',
+	];
+
+	/**
+	 * The extensions core requires that are absent, with gd not counted.
+	 *
+	 * @param callable(string): bool $loaded
+	 *   The loaded-extension check, replaceable so a host carrying every extension can test a miss.
+	 *
+	 * @return string[]
+	 *   The missing names, empty when the row can report OK.
+	 */
+	public static function missingCoreExtensions(?callable $loaded = null): array
+	{
+		$loaded ??= extension_loaded(...);
+		return array_values(
+			array_filter(self::CORE_EXTENSIONS, fn(string $name) => !$loaded($name)),
+		);
+	}
+
+	/**
 	 * Host functions this module can use, in the order they matter to a site.
 	 *
 	 * Shared with the install-time check so the two cannot disagree about what "installed" means.
@@ -352,25 +388,20 @@ final class Requirements
 	 * Replaces core rows that describe a php.ini this runtime does not have.
 	 *
 	 * NONE OF THESE IS MUTED. Each one is a true statement about a stock PHP host and a misleading
-	 * one here, so each is replaced with what is actually the case and why. A row that reports a
-	 * genuine loss keeps its severity: `gd` really is absent and code calling `imagecreate*`
-	 * directly really will fail, so it stays a warning rather than becoming an OK.
+	 * one here, so each is replaced with what is actually the case and why.
 	 *
 	 * @param array $requirements
 	 *   Every requirement Drupal collected, by key.
 	 */
 	private function alterPlatformRows(array &$requirements): void
 	{
-		// core marks a missing gd an Error because it assumes image styles cannot work. Here they
-		// do: `cfw_images` is a toolkit backed by the host, so derivatives are served
-		if (isset($requirements['php_extensions']) && !extension_loaded('gd')) {
+		// gd is refused rather than missing (the toolkit page says why), so its absence is not a
+		// finding; any other extension core requires still leaves core's Error in place
+		if (isset($requirements['php_extensions']) && self::missingCoreExtensions() === []) {
 			$requirements['php_extensions'] = [
 				'title' => new TranslatableMarkup('PHP extensions'),
-				'value' => new TranslatableMarkup('Enabled, except gd'),
-				'description' => new TranslatableMarkup(
-					'This runtime is PHP compiled to WebAssembly and carries no gd. Image styles and derivatives work through the cfw_images toolkit, which resizes at the edge instead. Contributed code that calls the gd functions directly will still fail, so gd is reported rather than hidden.',
-				),
-				'severity' => RequirementSeverity::Warning,
+				'value' => new TranslatableMarkup('Enabled'),
+				'severity' => RequirementSeverity::OK,
 			];
 		}
 
