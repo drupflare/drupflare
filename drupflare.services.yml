@@ -13,6 +13,11 @@ services:
   drupflare.http_deferred:
     class: Drupal\drupflare\Queue\CfwDeferredHttp
 
+  drupflare.menu_tree_manipulators:
+    class: Drupal\drupflare\Menu\NodeLinkAccess
+    decorates: menu.default_tree_manipulators
+    arguments: ['@access_manager', '@current_user', '@entity_type.manager', '@module_handler']
+
   drupflare.request_resetter:
     class: Drupal\drupflare\RequestResetter
     arguments: ['@service_container']
