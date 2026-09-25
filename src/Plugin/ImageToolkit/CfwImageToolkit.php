@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\drupflare\Plugin\ImageToolkit;
 
+use Drupal\Component\Plugin\Exception\PluginNotFoundException;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\ImageToolkit\ImageToolkitOperationManagerInterface;
@@ -25,10 +26,10 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
  * emit correct width and height attributes, and reports every manipulation as
  * successful-but-deferred so image styles do not fail.
  *
- * `apply()` returning TRUE without touching bytes means a
- * style-derived file on disk is the original. That is correct for delivery through
- * an image-resizing CDN and wrong for anything that reads the derivative's own
- * pixels. Drupal core does not; contrib that does will see full-size images.
+ * No operation plugin ships, so `apply()` answers FALSE for every effect and a style
+ * is never built through Drupal. The public style URL is rewritten to the delivery
+ * path instead (`Hook\ImageDelivery`), where the Worker resizes. Anything that
+ * reads a derivative's own pixels through Drupal gets no derivative.
  *
  * Dimensions come from getimagesize(), which is part of PHP's core and does not
  * need gd.
@@ -155,6 +156,26 @@ class CfwImageToolkit extends ImageToolkitBase
 			);
 		}
 		return $copied;
+	}
+
+	/**
+	 * {@inheritdoc}
+	 *
+	 * Core logs a missing operation at error severity; here every operation is missing by design,
+	 * so it is logged at info and the answer is unchanged.
+	 */
+	public function apply($operation, array $arguments = [])
+	{
+		try {
+			$this->getToolkitOperation($operation);
+		} catch (PluginNotFoundException) {
+			$this->logger->info(
+				"Image operation '@operation' is applied at delivery rather than by the toolkit.",
+				['@operation' => $operation],
+			);
+			return false;
+		}
+		return parent::apply($operation, $arguments);
 	}
 
 	/**
