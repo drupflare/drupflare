@@ -21,7 +21,7 @@ HttpsStreamWrapper::register();
  * /admin/help is where a Drupal administrator looks first and there was nothing about Drupflare
  * there at all, on a site whose entire runtime is Drupflare.
  */
-function drupflare_help(string $route_name, RouteMatchInterface $route_match): string
+function drupflare_help(?string $route_name, RouteMatchInterface $route_match): string
 {
 	switch ($route_name) {
 		case 'help.page.drupflare':
