@@ -266,8 +266,17 @@ class CfwImageToolkit extends ImageToolkitBase
 			),
 		];
 
+		$form['gd'] = [
+			'#type' => 'item',
+			'#title' => new TranslatableMarkup('gd'),
+			'#markup' => new TranslatableMarkup('Not available, and not planned.'),
+			'#description' => new TranslatableMarkup(
+				'Measured beside the Worker-side encoder on the same image, gd was slower and could not write WebP, so the choice is between the two engines above. Code that calls the gd functions directly will not find them.',
+			),
+		];
+
 		// derivatives are never written, so there is no quality or resampling setting to store; the
-		// two items above are a report rather than a form and submit nothing
+		// items above are a report rather than a form and submit nothing
 		return $form;
 	}
 

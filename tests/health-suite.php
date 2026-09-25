@@ -3228,6 +3228,11 @@ ok('buildConfigurationForm keeps what the caller already had', isset($built['exi
 ok('buildConfigurationForm reports the engine in force', isset($built['engine']['#markup']));
 ok('buildConfigurationForm reports what that engine encodes', isset($built['formats']['#markup']));
 ok(
+	'and says gd is not one of the choices',
+	($built['gd']['#markup'] ?? null) instanceof TranslatableMarkup &&
+		str_contains($built['gd']['#markup']->getUntranslatedString(), 'not planned'),
+);
+ok(
 	'submitConfigurationForm stores nothing and returns nothing',
 	(static function () use ($image, $form): bool {
 		$state = new FormState();

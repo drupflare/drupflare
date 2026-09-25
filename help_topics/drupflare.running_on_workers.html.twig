@@ -22,6 +22,9 @@ related:
   <dt>{% trans %}Caching{% endtrans %}</dt>
   <dd>{% trans %}A rendered page is stored in front of Drupal so the next visitor is answered without booting the interpreter. Saving content invalidates what depends on it and the affected pages are re-rendered in the background.{% endtrans %}</dd>
 
+  <dt>{% trans %}Images{% endtrans %}</dt>
+  <dd>{% trans %}Image styles are resized by the Worker, with its own encoder or with Cloudflare Images. PHP's gd extension is not available and is not planned: measured against the Worker's encoder it was slower and could not write WebP. Code that calls the gd functions directly will not find them.{% endtrans %}</dd>
+
   <dt>{% trans %}Mail{% endtrans %}</dt>
   <dd>{% trans %}Mail is committed during the request and sent between invocations, over a relay configured on the Worker. Port 25 is not reachable from the platform; submission ports are.{% endtrans %}</dd>
 </dl>
