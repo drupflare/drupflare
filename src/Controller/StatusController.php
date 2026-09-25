@@ -6,6 +6,7 @@ namespace Drupal\drupflare\Controller;
 
 use Drupal\Core\Controller\ControllerBase;
 use Drupal\drupflare\Host;
+use Stringable;
 
 /**
  * The Drupflare status page: what the Worker already reports, rendered.
@@ -46,6 +47,8 @@ final class StatusController extends ControllerBase
 			];
 		}
 
+		$lane = ($stats['replica']['role'] ?? 'primary') !== 'primary';
+
 		return [
 			'meters' => self::table((string) $this->t('Daily Meters'), [
 				// AGAINST THE ALLOWANCE, not as a bare count. A site that spends its quota goes
@@ -74,8 +77,13 @@ final class StatusController extends ControllerBase
 			]),
 			'replica' => self::table((string) $this->t('Read Replica Pool'), [
 				(string) $this->t('Role') => self::plain($stats['replica']['role'] ?? null),
-				(string) $this->t('Lane') => self::plain($stats['replica']['lane'] ?? null),
-				(string) $this->t('Stage') => self::plain($stats['replica']['stage'] ?? null),
+				// a primary has no lane or stage; `CREATED` there read as a lane never admitted
+				(string) $this->t('Lane') => self::plain(
+					$lane ? $stats['replica']['lane'] ?? null : null,
+				),
+				(string) $this->t('Stage') => self::plain(
+					$lane ? $stats['replica']['stage'] ?? null : null,
+				),
 				(string) $this->t('Guarded capabilities') => self::plain(
 					$stats['replica']['guarded'] ?? null,
 				),
@@ -91,7 +99,12 @@ final class StatusController extends ControllerBase
 				(string) $this->t('Stored pages') => self::plain(count($stats['cached'] ?? [])),
 				(string) $this->t('Fill queue depth') => self::plain(count($stats['queue'] ?? [])),
 				(string) $this->t('Shell candidates') => self::plain(
-					$stats['shellCandidates'] ?? null,
+					is_array($stats['shellCandidates'] ?? null)
+						? $this->t('@safe safe, @unsafe unsafe', [
+							'@safe' => (int) ($stats['shellCandidates']['safe'] ?? 0),
+							'@unsafe' => (int) ($stats['shellCandidates']['unsafe'] ?? 0),
+						])
+						: $stats['shellCandidates'] ?? null,
 				),
 				(string) $this->t('Interpreter booted') => self::yesNo($stats['phpBooted'] ?? null),
 				(string) $this->t('Interpreter recycles') => self::plain(
@@ -146,7 +159,8 @@ final class StatusController extends ControllerBase
 	{
 		$built = [];
 		foreach ($rows as $label => $value) {
-			$built[] = [$label, $value];
+			// a bare array cell is read as attributes, which rendered every value blank
+			$built[] = [$label, ['data' => $value]];
 		}
 		return [
 			'#type' => 'details',
@@ -251,7 +265,11 @@ final class StatusController extends ControllerBase
 		if ($value === null || $value === '') {
 			return ['#markup' => '&mdash;'];
 		}
-		return ['#plain_text' => is_scalar($value) ? (string) $value : json_encode($value)];
+		// a translated fallback is Stringable, and json_encode wrapped it in quotes
+		if (is_scalar($value) || $value instanceof Stringable) {
+			return ['#plain_text' => (string) $value];
+		}
+		return ['#plain_text' => json_encode($value)];
 	}
 
 	/**
