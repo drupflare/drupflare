@@ -195,6 +195,8 @@ final class RequestResetter
 		$log['form_errors_reset'] = $this->clearFormErrors();
 		$log['render_contexts_dropped'] = $this->clearRenderContexts();
 		$log['views_page_render_array_cleared'] = $this->clearViewsPageRenderArray();
+		$log['local_tasks_cleared'] = $this->clearLocalTaskData();
+		$log['entity_access_caches_emptied'] = $this->clearEntityAccessCaches();
 
 		return $log;
 	}
@@ -486,6 +488,73 @@ final class RequestResetter
 			Degradation::record(
 				'request reset views',
 				'a Views page render array survived into the next request, so one visitor can be served a view built for another: ' .
+					$e->getMessage(),
+			);
+			return false;
+		}
+	}
+
+	/**
+	 * Empties the access cache of every entity access handler the incarnation has built.
+	 *
+	 * `EntityAccessControlHandler::$accessCache` is keyed by user, entity, language and operation,
+	 * and nothing in core empties it on a save, because a process ends first. Here it survived:
+	 * an anonymous `view` answered while a node was published kept answering after it was
+	 * unpublished, so the node rendered 200 and entered the public page store.
+	 *
+	 * @return int
+	 *   How many handlers were emptied.
+	 */
+	private function clearEntityAccessCaches(): int
+	{
+		if (!$this->container->initialized('entity_type.manager')) {
+			return 0;
+		}
+		try {
+			$manager = $this->container->get('entity_type.manager');
+			$handlers = (new ReflectionObject($manager))
+				->getProperty('handlers')
+				->getValue($manager);
+			$emptied = 0;
+			foreach ($handlers['access'] ?? [] as $handler) {
+				if (is_object($handler) && method_exists($handler, 'resetCache')) {
+					$handler->resetCache();
+					$emptied++;
+				}
+			}
+			return $emptied;
+		} catch (Throwable $e) {
+			Degradation::record(
+				'request reset entity access',
+				'an entity access answer survived into the next request, so a change to who may see an entity can be ignored: ' .
+					$e->getMessage(),
+			);
+			return -1;
+		}
+	}
+
+	/**
+	 * Drops the local tasks `LocalTaskManager` built for the last request.
+	 *
+	 * `$taskData` is keyed by route name alone, so tabs built for `/node/1` answered `/node/10`:
+	 * their links, their access and their cacheability, which put `node:1` on every node page.
+	 * The service has no reset(), and it is only touched when the request built it.
+	 */
+	private function clearLocalTaskData(): bool
+	{
+		$id = 'plugin.manager.menu.local_task';
+		if (!$this->container->initialized($id)) {
+			return false;
+		}
+		try {
+			$manager = $this->container->get($id);
+			$property = (new ReflectionObject($manager))->getProperty('taskData');
+			$property->setValue($manager, []);
+			return true;
+		} catch (Throwable $e) {
+			Degradation::record(
+				'request reset local tasks',
+				'local tasks built for one page survived into the next request, so its tabs can point at another page: ' .
 					$e->getMessage(),
 			);
 			return false;
