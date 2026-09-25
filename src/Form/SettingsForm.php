@@ -58,7 +58,9 @@ final class SettingsForm extends FormBase
 			'Read replica lanes. Each lane also repeats every write, so a write-heavy site should keep this low.',
 		'REPLICA_LAG_MS' => 'How far behind the primary a lane may fall before it stops serving.',
 		'SITE_WARM' =>
-			'Keep the site resident between requests. Costs quota on an idle site; saves a cold start on a busy one.',
+			'Keep the site resident between requests. Unset warms a paid site and lets a free one decide from its traffic.',
+		'WARM_INTERVAL_MS' =>
+			'How often a warmed site wakes itself. 8000 keeps it resident; longer intervals cost fewer wakes and sometimes miss.',
 		'EDGE_PLAN' => 'Answer eligible authenticated pages at the edge with no object hop.',
 		'ASSET_AGGREGATES' => 'Serve combined CSS and JS built at pack time.',
 		'MEMORY_CACHE_BINS' =>
