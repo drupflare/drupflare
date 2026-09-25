@@ -14,12 +14,12 @@ parameters:
         # signature that can drift from core's.
         - vendor/drupal/core/includes/bootstrap.inc
         - vendor/drupal/core/includes/common.inc
+    scanDirectories:
         # A MODULE's namespace is registered by the kernel at runtime, not by composer, so
         # Drupal\user\ resolves at execution and is invisible to phpstan. Same reason as the include
         # files above: the real definitions from the real dependency rather than a stub that drifts.
-        - vendor/drupal/core/modules/user/src/Entity/Role.php
-        - vendor/drupal/core/modules/user/src/Entity/User.php
-        - vendor/drupal/core/modules/user/src/UserInterface.php
-    scanDirectories:
+        - vendor/drupal/core/modules/user/src
+        - vendor/drupal/core/modules/node/src
+        - vendor/drupal/core/modules/path_alias/src
         # Hook\ImageDelivery reads image styles; same reason as the user entities above
         - vendor/drupal/core/modules/image/src

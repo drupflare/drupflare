@@ -1,21 +1,12 @@
-administer drupflare:
-  title: 'Administer Drupflare'
-  description: 'Reach the Drupflare section of the administration UI.'
-
 view drupflare status:
   title: 'View the Drupflare runtime status'
   description: 'Read the daily meters, the replica pool, the page tiers and the outbound queues. Read only; nothing on that page is configuration.'
 
-administer drupflare settings:
-  title: 'Administer Drupflare settings'
-  description: 'Change the runtime levers this site is served under. Every lever here trades speed for quota; none of them changes what is reachable.'
+administer drupflare site:
+  title: 'Administer the Drupflare site'
+  description: 'Change the runtime levers, size the replica pool, and use the operations terminal to rebuild caches, drain queues and run database updates. Nothing here runs code the site did not ship with.'
 
-administer drupflare code:
-  title: 'Deliver Drupflare code'
-  description: 'Wire a git remote, install a package from the registry, or upload a module tree. This runs code the site did not ship with.'
-  restrict access: true
-
-administer drupflare operations:
-  title: 'Administer Drupflare operations'
-  description: 'Use the operations terminal, which can rebuild caches, run database updates and install modules.'
+administer drupflare owner:
+  title: 'Own the Drupflare site'
+  description: 'Deliver code: wire a git remote, install a package or a module, or upload a module tree. Only an account that already holds this permission can grant it.'
   restrict access: true

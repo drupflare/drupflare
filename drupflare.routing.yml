@@ -4,7 +4,7 @@ drupflare.ops_terminal:
     _form: 'Drupal\drupflare\Form\OpsTerminalForm'
     _title: 'Operations Terminal'
   requirements:
-    _permission: 'administer drupflare operations'
+    _permission: 'administer drupflare site'
   options:
     _admin_route: true
 
@@ -24,7 +24,7 @@ drupflare.admin:
     _controller: '\Drupal\system\Controller\SystemController::systemAdminMenuBlockPage'
     _title: 'Drupflare'
   requirements:
-    _permission: 'administer drupflare+administer site configuration'
+    _permission: 'view drupflare status+administer site configuration'
   options:
     _admin_route: true
 
@@ -44,7 +44,7 @@ drupflare.settings:
     _form: 'Drupal\drupflare\Form\SettingsForm'
     _title: 'Runtime Settings'
   requirements:
-    _permission: 'administer drupflare settings'
+    _permission: 'administer drupflare site'
   options:
     _admin_route: true
 
@@ -54,6 +54,6 @@ drupflare.modules:
     _controller: '\Drupal\drupflare\Controller\ModulesController::page'
     _title: 'Code Delivery'
   requirements:
-    _permission: 'administer drupflare code'
+    _permission: 'administer drupflare owner'
   options:
     _admin_route: true

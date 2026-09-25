@@ -8,6 +8,7 @@ use Drupal\Core\Form\FormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Url;
 use Drupal\drupflare\Host;
+use Drupal\drupflare\Hook\OwnerTier;
 use Drupal\drupflare\Ops\CommandLine;
 use Drupal\drupflare\Ops\OpsRegistry;
 use Exception;
@@ -143,7 +144,7 @@ final class OpsTerminalForm extends FormBase
 		}
 		if (
 			self::deliversCode($parsed) &&
-			!$this->currentUser()->hasPermission('administer drupflare code')
+			!$this->currentUser()->hasPermission(OwnerTier::PERMISSION)
 		) {
 			$form_state->set('parsed', [
 				'ok' => false,
@@ -151,7 +152,7 @@ final class OpsTerminalForm extends FormBase
 			]);
 			$this->messenger()->addWarning(
 				$this->t(
-					'@what delivers code this site did not ship with, which needs the "Deliver Drupflare code" permission.',
+					'@what delivers code this site did not ship with, which needs the "Own the Drupflare site" permission.',
 					[
 						'@what' => self::name($parsed),
 					],
@@ -199,7 +200,7 @@ final class OpsTerminalForm extends FormBase
 
 		if (
 			self::deliversCode($parsed) &&
-			!$this->currentUser()->hasPermission('administer drupflare code')
+			!$this->currentUser()->hasPermission(OwnerTier::PERMISSION)
 		) {
 			// re-checked at the RUN rather than trusted from the check: the parse rides in form
 			// state across a rebuild, so a permission revoked in between would otherwise be missed
