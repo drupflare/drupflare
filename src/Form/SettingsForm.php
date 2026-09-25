@@ -61,6 +61,9 @@ final class SettingsForm extends FormBase
 			'Keep the site resident between requests. Costs quota on an idle site; saves a cold start on a busy one.',
 		'EDGE_PLAN' => 'Answer eligible authenticated pages at the edge with no object hop.',
 		'ASSET_AGGREGATES' => 'Serve combined CSS and JS built at pack time.',
+		'MEMORY_CACHE_BINS' =>
+			'Cache bins kept in memory instead of in the database, comma-separated, or none.',
+		'MEMORY_CACHE_MAX_ITEMS' => 'Entries each in-memory bin may hold before it evicts.',
 	];
 
 	/**
@@ -134,14 +137,19 @@ final class SettingsForm extends FormBase
 			$name = (string) $lever['name'];
 			$source = (string) ($lever['source'] ?? 'default');
 			$form['levers'][$name]['name'] = ['#markup' => '<code>' . $name . '</code>'];
-			$form['levers'][$name]['value'] = [
-				'#type' => 'textfield',
-				'#title' => $name,
-				'#title_display' => 'invisible',
-				'#default_value' => (string) ($lever['value'] ?? ''),
-				'#size' => 20,
-				'#disabled' => !$writable,
-			];
+			// the field holds the override alone, so a deployed value outside the domain cannot fail
+			// the whole form's validation
+			$form['levers'][$name]['value'] =
+				[
+					'#title' => $name,
+					'#title_display' => 'invisible',
+					'#default_value' => self::override($lever),
+					'#disabled' => !$writable,
+				] +
+				$this->field(
+					is_array($lever['domain'] ?? null) ? $lever['domain'] : [],
+					$source === 'kv' ? '' : (string) ($lever['value'] ?? ''),
+				);
 			$form['levers'][$name]['source'] = ['#markup' => $this->sourceLabel($source)];
 			$form['levers'][$name]['what'] = [
 				'#markup' => (string) ($this::DESCRIPTIONS[$name] ?? ''),
@@ -156,6 +164,72 @@ final class SettingsForm extends FormBase
 			];
 		}
 		return $form;
+	}
+
+	/**
+	 * The element for one lever, from the domain the host enforces.
+	 *
+	 * The host checks every value again on save, so this is how the form avoids offering what the
+	 * host would refuse rather than the check itself. An empty choice clears the override.
+	 *
+	 * @param array $domain
+	 *   The lever's domain as the host reports it; empty from a host that reports none.
+	 * @param string $deployed
+	 *   The value in force without an override, shown beside the empty choice.
+	 *
+	 * @return array
+	 *   The element keys that depend on the domain.
+	 */
+	private function field(array $domain, string $deployed): array
+	{
+		$empty = [
+			'' =>
+				$deployed === ''
+					? $this->t('Deployed Value')
+					: $this->t('Deployed Value (@value)', ['@value' => $deployed]),
+		];
+		return match ($domain['kind'] ?? null) {
+			'int' => [
+				'#type' => 'number',
+				'#placeholder' => $deployed,
+				'#min' => (int) $domain['min'],
+				'#max' => (int) $domain['max'],
+				'#step' => 1,
+				'#field_suffix' => match ($domain['unit'] ?? null) {
+					'ms' => $this->t('ms'),
+					'bytes' => $this->t('bytes'),
+					default => '',
+				},
+			],
+			'flag' => [
+				'#type' => 'select',
+				'#options' => $empty + ['1' => $this->t('On'), '0' => $this->t('Off')],
+			],
+			'enum' => [
+				'#type' => 'select',
+				'#options' =>
+					$empty +
+					array_combine(
+						array_map('strval', (array) $domain['values']),
+						array_map('strval', (array) $domain['values']),
+					),
+			],
+			default => ['#type' => 'textfield', '#size' => 20, '#placeholder' => $deployed],
+		};
+	}
+
+	/**
+	 * The stored override for one lever, or '' when the value in force comes from elsewhere.
+	 *
+	 * @param array $lever
+	 *   One lever as the host reports it.
+	 *
+	 * @return string
+	 *   The override.
+	 */
+	private static function override(array $lever): string
+	{
+		return ($lever['source'] ?? '') === 'kv' ? (string) ($lever['value'] ?? '') : '';
 	}
 
 	/**
@@ -200,7 +274,7 @@ final class SettingsForm extends FormBase
 			if (!isset($submitted[$name]['value'])) {
 				continue;
 			}
-			$was = (string) ($lever['value'] ?? '');
+			$was = self::override($lever);
 			$now = trim((string) $submitted[$name]['value']);
 			if ($now !== $was) {
 				$patch[$name] = $now;
@@ -234,6 +308,11 @@ final class SettingsForm extends FormBase
 		if ($accepted !== []) {
 			$this->messenger()->addStatus(
 				$this->t('Saved: @names', ['@names' => implode(', ', $accepted)]),
+			);
+		}
+		foreach ((array) ($reply['invalid'] ?? []) as $bad) {
+			$this->messenger()->addError(
+				$this->t('Not saved: @why', ['@why' => (string) ($bad['reason'] ?? '')]),
 			);
 		}
 		$refused = (array) ($reply['refused'] ?? []);
