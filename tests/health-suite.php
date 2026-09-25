@@ -140,6 +140,14 @@ use Drupal\Core\Hook\Attribute\Hook;
 use Drupal\drupflare\Hook\Requirements;
 use Drupal\drupflare\Install\Requirements\DrupflareRequirements;
 use Drupal\drupflare\Plugin\ImageToolkit\CfwImageToolkit;
+use Drupal\drupflare\Form\SettingsForm;
+use Drupal\Core\StringTranslation\TranslationInterface;
+use Drupal\Component\Plugin\Exception\PluginNotFoundException;
+use Drupal\Core\ImageToolkit\ImageToolkitBase;
+use Drupal\Core\ImageToolkit\ImageToolkitInterface;
+use Drupal\Core\ImageToolkit\ImageToolkitOperationManagerInterface;
+use Psr\Log\AbstractLogger;
+use Psr\Log\LogLevel;
 use Drupal\drupflare\Queue\CfwDeferredHttp;
 use Symfony\Component\Routing\Route;
 use Symfony\Component\Routing\RouteCollection;
@@ -3197,6 +3205,52 @@ ok(
 	})(),
 );
 
+// no operation plugin ships, so every effect is missing by design and must not log at error
+$levels = [];
+$operated = toolkit();
+$props = new ReflectionClass(ImageToolkitBase::class);
+$props->getProperty('operationManager')->setValue(
+	$operated,
+	new class implements ImageToolkitOperationManagerInterface {
+		public function getToolkitOperation(ImageToolkitInterface $toolkit, $operation)
+		{
+			throw new PluginNotFoundException($operation);
+		}
+		public function getDefinition($plugin_id, $exception_on_invalid = true)
+		{
+			return null;
+		}
+		public function getDefinitions()
+		{
+			return [];
+		}
+		public function hasDefinition($plugin_id)
+		{
+			return false;
+		}
+		public function createInstance($plugin_id, array $configuration = [])
+		{
+			throw new PluginNotFoundException($plugin_id);
+		}
+		public function getInstance(array $options)
+		{
+			return false;
+		}
+	},
+);
+$props->getProperty('logger')->setValue(
+	$operated,
+	new class ($levels) extends AbstractLogger {
+		public function __construct(private array &$levels) {}
+		public function log($level, string|Stringable $message, array $context = []): void
+		{
+			$this->levels[] = $level;
+		}
+	},
+);
+ok('a style effect answers FALSE, as it did', $operated->apply('scale', ['width' => 10]) === false);
+ok('and is logged below error severity', $levels === [LogLevel::INFO]);
+
 $before = (string) file_get_contents($png);
 ok('saving over the source is a no-op that reports success', $image->save($png) === true);
 ok('and does not rewrite the file', (string) file_get_contents($png) === $before);
@@ -3892,6 +3946,108 @@ $requirements->requirementsAlter($rows);
 ok('with the allocator on core\'s row stands', $rows['php_memory_limit']['value'] === '96M');
 
 putenv($priorAlloc === false ? 'USE_ZEND_ALLOC' : "USE_ZEND_ALLOC=$priorAlloc");
+// #endregion
+// #region the extensions row
+echo "\n# gd is refused, so the extensions row does not warn about it\n";
+
+ok(
+	'gd alone missing leaves nothing to report',
+	Requirements::missingCoreExtensions(fn(string $name) => $name !== 'gd') === [],
+);
+// CONTROL: another missing extension is still named, so core's Error survives it
+ok(
+	'another missing extension is still named',
+	Requirements::missingCoreExtensions(
+		fn(string $name) => !in_array($name, ['gd', 'zlib'], true),
+	) === ['zlib'],
+);
+$rows = ['php_extensions' => ['title' => 'PHP extensions', 'value' => 'Disabled']];
+$requirements->requirementsAlter($rows);
+ok(
+	'the row reports OK with no gd note',
+	$rows['php_extensions']['severity'] === RequirementSeverity::OK &&
+		!isset($rows['php_extensions']['description']),
+);
+// #endregion
+// #region the lever form
+echo "\n# the lever form offers what the host would accept\n";
+
+install_host([
+	'cfwSettings' => new HostSpy([
+		'ok' => true,
+		'writable' => true,
+		'levers' => [
+			[
+				'name' => 'OPCACHE_MODE',
+				'value' => 'shm',
+				'source' => 'kv',
+				'domain' => ['kind' => 'enum', 'values' => ['file', 'shm', 'off']],
+			],
+			[
+				'name' => 'RENDER_BUDGET_MS',
+				'value' => '90000',
+				'source' => 'var',
+				'domain' => ['kind' => 'int', 'min' => 0, 'max' => 60000, 'unit' => 'ms'],
+			],
+			[
+				'name' => 'SITE_WARM',
+				'value' => null,
+				'source' => 'default',
+				'domain' => ['kind' => 'flag'],
+			],
+			['name' => 'NEW_LEVER', 'value' => null, 'source' => 'default'],
+		],
+	]),
+]);
+$leverForm = new SettingsForm();
+$leverForm->setStringTranslation(
+	new class implements TranslationInterface {
+		public function translate($string, array $args = [], array $options = [])
+		{
+			return strtr($string, $args);
+		}
+		public function translateString(TranslatableMarkup $translated_string)
+		{
+			return $translated_string->getUntranslatedString();
+		}
+		public function formatPlural(
+			$count,
+			$singular,
+			$plural,
+			array $args = [],
+			array $options = [],
+		) {
+			return strtr($singular, $args);
+		}
+	},
+);
+$levers = $leverForm->buildForm([], new FormState())['levers'];
+ok(
+	'an enum lever is a select of its values plus the deployed choice',
+	$levers['OPCACHE_MODE']['value']['#type'] === 'select' &&
+		array_keys($levers['OPCACHE_MODE']['value']['#options']) === ['', 'file', 'shm', 'off'],
+);
+ok('and holds the override', $levers['OPCACHE_MODE']['value']['#default_value'] === 'shm');
+ok(
+	'a numeric lever is bounded by the host range',
+	$levers['RENDER_BUDGET_MS']['value']['#type'] === 'number' &&
+		$levers['RENDER_BUDGET_MS']['value']['#max'] === 60000,
+);
+// a deployed value outside the range would otherwise fail validation for every other lever
+ok(
+	'a deployed value is a placeholder, not the field value',
+	$levers['RENDER_BUDGET_MS']['value']['#default_value'] === '' &&
+		$levers['RENDER_BUDGET_MS']['value']['#placeholder'] === '90000',
+);
+ok(
+	'a flag is on, off or deployed',
+	array_map('strval', array_keys($levers['SITE_WARM']['value']['#options'])) === ['', '1', '0'],
+);
+ok(
+	'a lever an older module does not know still renders as text',
+	$levers['NEW_LEVER']['value']['#type'] === 'textfield',
+);
+install_host([]);
 // #endregion
 // #region the router dumper's skip
 echo "\n# the router dump that does not rewrite the rows already in the table\n";
