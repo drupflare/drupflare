@@ -110,6 +110,7 @@ use Drupal\Core\Routing\MatcherDumper;
 use Drupal\Core\Session\AccountProxy;
 use Drupal\Core\Session\UserSession;
 use Drupal\Core\StreamWrapper\StreamWrapperInterface;
+use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\drupflare\Cache\CfwCacheBackendFactory;
 use Drupal\drupflare\DrupflareServiceProvider;
 use Drupal\drupflare\File\CfwFileSystem;
@@ -3854,6 +3855,38 @@ $monthly = $quotaLine('image-transforms', 4000, 'warn');
 $monthly['period'] = 'month';
 ok('and a monthly one is not on it', Requirements::dailyQuotaRows($quotaStats([$monthly])) === []);
 ok('off-platform there is nothing to report', Requirements::dailyQuotaRows(null) === []);
+// #endregion
+// #region the memory limit row
+echo "\n# the memory limit row names the isolate, not an unenforced ini value\n";
+
+$coreMemoryRow = static fn(): array => [
+	'php_memory_limit' => ['title' => 'PHP memory limit', 'value' => '96M'],
+];
+$priorAlloc = getenv('USE_ZEND_ALLOC');
+
+putenv('USE_ZEND_ALLOC=0');
+$rows = $coreMemoryRow();
+$requirements->requirementsAlter($rows);
+ok(
+	'with the allocator off the row reports the isolate cap',
+	$rows['php_memory_limit']['value'] instanceof TranslatableMarkup &&
+		$rows['php_memory_limit']['value']->getUntranslatedString() === '128 MiB per isolate',
+);
+ok(
+	'and says the ini value is not enforced',
+	str_contains(
+		$rows['php_memory_limit']['description']->getUntranslatedString(),
+		'memory_limit is not enforced',
+	),
+);
+
+// CONTROL: a host running Zend's allocator enforces memory_limit, so core's row is true there
+putenv('USE_ZEND_ALLOC');
+$rows = $coreMemoryRow();
+$requirements->requirementsAlter($rows);
+ok('with the allocator on core\'s row stands', $rows['php_memory_limit']['value'] === '96M');
+
+putenv($priorAlloc === false ? 'USE_ZEND_ALLOC' : "USE_ZEND_ALLOC=$priorAlloc");
 // #endregion
 // #region the router dumper's skip
 echo "\n# the router dump that does not rewrite the rows already in the table\n";

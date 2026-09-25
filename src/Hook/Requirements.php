@@ -434,6 +434,19 @@ final class Requirements
 			];
 		}
 
+		// keyed on the allocator, because that is what makes memory_limit decorative: with Zend's
+		// memory manager off nothing counts against it, measured holding 38 MB under an 8M cap
+		if (isset($requirements['php_memory_limit']) && getenv('USE_ZEND_ALLOC') === '0') {
+			$requirements['php_memory_limit'] = [
+				'title' => new TranslatableMarkup('PHP memory limit'),
+				'value' => new TranslatableMarkup('128 MiB per isolate'),
+				'description' => new TranslatableMarkup(
+					'PHP runs here with its own memory manager switched off, so memory_limit is not enforced and the value in php.ini means nothing. The real ceiling is the 128 MiB the Durable Object isolate is allowed, shared with the JavaScript host. A request that crosses it resets the object rather than failing with a PHP error.',
+				),
+				'severity' => RequirementSeverity::OK,
+			];
+		}
+
 		// opcache is compiled in and DISABLED, which is why this row reports it and only
 		// its reason is missing: measured on this interpreter it bought no render time and cost
 		// ~37 MiB of the 128 MiB an isolate gets
