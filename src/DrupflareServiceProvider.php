@@ -279,8 +279,11 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 	 * Ordered by what each can do rather than by preference, and every branch is a RUNTIME question:
 	 * the same module code ships to a build with Asyncify, a build with the park, and a build with
 	 * neither, and picks a different transport on each.
+	 *
+	 * Public because a Guzzle client built without a handler asks the same question: the pack
+	 * rewrites `GuzzleHttp\Utils::chooseHandler()` to answer with this class.
 	 */
-	private static function pickHandlerClass(): string
+	public static function pickHandlerClass(): string
 	{
 		if (self::runtimeCanSuspend()) {
 			return FetchHandler::class;

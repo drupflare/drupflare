@@ -61,6 +61,8 @@ final class SettingsForm extends FormBase
 			'Keep the site resident between requests. Unset warms a paid site and lets a free one decide from its traffic.',
 		'WARM_INTERVAL_MS' =>
 			'How often a warmed site wakes itself. 8000 keeps it resident; longer intervals cost fewer wakes and sometimes miss.',
+		'SLEEP_BUDGET_MS' =>
+			'How long code may pause through sleep() per visitor request, in milliseconds. Background work gets fifteen times this.',
 		'EDGE_PLAN' => 'Answer eligible authenticated pages at the edge with no object hop.',
 		'ASSET_AGGREGATES' => 'Serve combined CSS and JS built at pack time.',
 		'MEMORY_CACHE_BINS' =>

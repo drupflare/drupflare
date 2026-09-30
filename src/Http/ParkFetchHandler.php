@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\drupflare\Http;
 
+use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
 use GuzzleHttp\Promise\FulfilledPromise;
 use GuzzleHttp\Promise\PromiseInterface;
@@ -95,6 +96,23 @@ final class ParkFetchHandler
 	public function __invoke(RequestInterface $request, array $options): PromiseInterface
 	{
 		try {
+			// Guzzle's `delay` option, which RetryMiddleware sets for its backoff, waits here
+			if (($options['delay'] ?? 0) > 0) {
+				$wanted = (int) ceil((float) $options['delay']);
+				$waited = Park::sleep($wanted);
+				if ($waited['slept'] < $wanted) {
+					Degradation::record(
+						'guzzle delay',
+						sprintf(
+							'a %d ms request delay waited %d ms; the invocation has %d ms of its waiting allowance left',
+							$wanted,
+							$waited['slept'],
+							$waited['remaining'],
+						),
+						'untested',
+					);
+				}
+			}
 			$headers = [];
 			foreach ($request->getHeaders() as $name => $values) {
 				$headers[$name] = implode(', ', $values);
@@ -110,6 +128,9 @@ final class ParkFetchHandler
 				// Cloudflare follows redirects by default; Guzzle expects to control it
 				'redirect' => empty($options['allow_redirects']) ? 'manual' : 'follow',
 			];
+			if (($options['timeout'] ?? 0) > 0) {
+				$descriptor['timeoutMs'] = (int) ceil($options['timeout'] * 1000);
+			}
 
 			$json = json_encode($descriptor);
 			if ($json === false) {

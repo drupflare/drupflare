@@ -22,6 +22,31 @@ namespace Drupal\drupflare\Http;
 final class Park
 {
 	/**
+	 * Answers a park in-process, so a suite can stand in for the host.
+	 *
+	 * @var (callable(string): mixed)|null
+	 */
+	private static $driver = null;
+
+	/**
+	 * Installs or clears the in-process answer.
+	 *
+	 * @internal
+	 */
+	public static function useDriver(?callable $driver): void
+	{
+		self::$driver = $driver;
+	}
+
+	/**
+	 * Whether a park can be answered at all, by the runtime or by an installed driver.
+	 */
+	public static function available(): bool
+	{
+		return self::$driver !== null || function_exists('cfw_park_run');
+	}
+
+	/**
 	 * Suspends this call until the host answers it.
 	 *
 	 * @param string $target
@@ -33,8 +58,41 @@ final class Park
 	 */
 	public static function yieldTo(string $target): mixed
 	{
-		$open = 'stream_socket_client';
-		return @$open($target);
+		return ParkSession::around(ParkSession::current(), function () use ($target) {
+			if (self::$driver !== null) {
+				return (self::$driver)($target);
+			}
+			$open = 'stream_socket_client';
+			return @$open($target);
+		});
+	}
+
+	/**
+	 * The scheme a wait parks under; must match `PARK_SLEEP_SCHEME` in `park-drive.ts`.
+	 */
+	public const SLEEP_SCHEME = 'cfwpark+sleep://';
+
+	/**
+	 * Waits through the host, because the clock does not advance inside a PHP run.
+	 *
+	 * @param int $ms
+	 *   How long the caller asked to wait.
+	 *
+	 * @return array{slept: int, remaining: int}
+	 *   What the host waited and what is left of the invocation's allowance. `slept` is 0 when no
+	 *   park is running, which is the caller's cue to record that it did not wait.
+	 */
+	public static function sleep(int $ms): array
+	{
+		if ($ms <= 0) {
+			return ['slept' => 0, 'remaining' => 0];
+		}
+		$raw = self::yieldTo(self::SLEEP_SCHEME . $ms);
+		$reply = is_string($raw) ? json_decode($raw, true) : null;
+		return [
+			'slept' => (int) (is_array($reply) ? $reply['slept'] ?? 0 : 0),
+			'remaining' => (int) (is_array($reply) ? $reply['remaining'] ?? 0 : 0),
+		];
 	}
 
 	/**
