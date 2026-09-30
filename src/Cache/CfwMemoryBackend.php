@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\drupflare\Cache;
 
+use Drupal\Component\Serialization\PhpSerialize;
 use Drupal\Core\Cache\Cache;
 use Drupal\Core\Cache\CacheBackendInterface;
 use Drupal\Core\Cache\CacheTagsChecksumInterface;
@@ -27,11 +28,15 @@ use Drupal\Core\Cache\CacheTagsChecksumInterface;
  * same test `DatabaseBackend` applies -- and that provider reads the `cachetags` table, which IS
  * replicated. A lane rejects its own stale entries with nothing told to it.
  *
- * The isolate is 128 MiB and the worst measured workload peaks at 92.69 MiB, so an unbounded bin
- * would spend the headroom the interpreter needs. `USE_ZEND_ALLOC=0` means PHP returns nothing
- * between requests, so the footprint is a high-water mark until the whole interpreter is dropped.
- * The bound is an item count rather than a byte count because measuring bytes means serialising,
- * which is the cost moving off SQLite removes.
+ * **ENTRIES ARE STORED SERIALISED AND BOUNDED BY BYTES**, the way core's `MemoryBackend` stores
+ * them. They used to be stored live and bounded by count alone, and a live render array holds its
+ * objects, so one `dynamic_page_cache` entry for an admin page kept an entity graph resident. On a
+ * deployed free worker that reset the object for its memory on most authenticated admin renders,
+ * and turning the bins off took the failures from 34 to 6 over the same drive. A live entry was also
+ * mutable by whoever held the array after `set()`, which a cache must not allow.
+ *
+ * `USE_ZEND_ALLOC=0` means PHP returns nothing between requests, so the footprint is a high-water
+ * mark until the whole interpreter is dropped, which is why the byte bound is small.
  */
 class CfwMemoryBackend implements CacheBackendInterface
 {
@@ -43,6 +48,21 @@ class CfwMemoryBackend implements CacheBackendInterface
 	 * wrong bound is one interpreter drop rather than an isolate reset.
 	 */
 	public const DEFAULT_MAX_ITEMS = 64;
+
+	/**
+	 * Serialised bytes per bin. Whichever bound is reached first evicts.
+	 *
+	 * 4 MiB holds dozens of ordinary pages and a handful of admin pages, and stays well inside the
+	 * ~20-32 MiB the object has left beside a booted interpreter.
+	 */
+	public const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
+
+	/**
+	 * Serialised bytes each bin holds.
+	 *
+	 * @var array<string, int>
+	 */
+	private static array $bytes = [];
 
 	/**
 	 * The store, per bin, oldest first.
@@ -57,8 +77,10 @@ class CfwMemoryBackend implements CacheBackendInterface
 		private readonly string $bin,
 		private readonly CacheTagsChecksumInterface $checksumProvider,
 		private readonly int $maxItems = self::DEFAULT_MAX_ITEMS,
+		private readonly int $maxBytes = self::DEFAULT_MAX_BYTES,
 	) {
 		self::$store[$this->bin] ??= [];
+		self::$bytes[$this->bin] ??= 0;
 	}
 
 	/**
@@ -86,6 +108,18 @@ class CfwMemoryBackend implements CacheBackendInterface
 	public static function reset(): void
 	{
 		self::$store = [];
+		self::$bytes = [];
+	}
+
+	/**
+	 * Serialised bytes each bin is holding.
+	 *
+	 * @return array<string, int>
+	 *   Bytes by bin name.
+	 */
+	public static function sizes(): array
+	{
+		return self::$bytes;
 	}
 
 	/**
@@ -126,10 +160,16 @@ class CfwMemoryBackend implements CacheBackendInterface
 		// unset first, so a re-set moves the entry to the END of the insertion order and the
 		// eviction below drops what has genuinely been idle longest rather than what was stored
 		// longest ago
-		unset(self::$store[$this->bin][$cid]);
+		$this->delete($cid);
+		$serialized = serialize($data);
+		// one entry larger than the whole bin would evict everything and still not fit
+		if (strlen($serialized) > $this->maxBytes) {
+			return;
+		}
+		self::$bytes[$this->bin] = (self::$bytes[$this->bin] ?? 0) + strlen($serialized);
 		self::$store[$this->bin][$cid] = (object) [
 			'cid' => $cid,
-			'data' => $data,
+			'data' => $serialized,
 			'created' => round(microtime(true), 3),
 			'expire' => $expire,
 			'tags' => $tags,
@@ -159,7 +199,14 @@ class CfwMemoryBackend implements CacheBackendInterface
 	 */
 	public function delete($cid)
 	{
-		unset(self::$store[$this->bin][$cid]);
+		$item = self::$store[$this->bin][$cid] ?? null;
+		if ($item !== null) {
+			self::$bytes[$this->bin] = max(
+				0,
+				(self::$bytes[$this->bin] ?? 0) - strlen($item->data),
+			);
+			unset(self::$store[$this->bin][$cid]);
+		}
 	}
 
 	/**
@@ -178,6 +225,7 @@ class CfwMemoryBackend implements CacheBackendInterface
 	public function deleteAll()
 	{
 		self::$store[$this->bin] = [];
+		self::$bytes[$this->bin] = 0;
 	}
 
 	/**
@@ -218,7 +266,7 @@ class CfwMemoryBackend implements CacheBackendInterface
 		$now = round(microtime(true), 3);
 		foreach (self::$store[$this->bin] as $cid => $item) {
 			if ($item->expire !== Cache::PERMANENT && $item->expire < $now) {
-				unset(self::$store[$this->bin][$cid]);
+				$this->delete($cid);
 			}
 		}
 	}
@@ -228,7 +276,7 @@ class CfwMemoryBackend implements CacheBackendInterface
 	 */
 	public function removeBin()
 	{
-		unset(self::$store[$this->bin]);
+		unset(self::$store[$this->bin], self::$bytes[$this->bin]);
 	}
 
 	/**
@@ -249,7 +297,11 @@ class CfwMemoryBackend implements CacheBackendInterface
 		if ($copy->valid && !$this->checksumProvider->isValid($copy->checksum, $copy->tags)) {
 			$copy->valid = false;
 		}
-		return $allowInvalid || $copy->valid ? $copy : false;
+		if (!$allowInvalid && !$copy->valid) {
+			return false;
+		}
+		$copy->data = PhpSerialize::decode($copy->data);
+		return $copy;
 	}
 
 	/**
@@ -257,12 +309,14 @@ class CfwMemoryBackend implements CacheBackendInterface
 	 */
 	private function evict(): void
 	{
-		$over = count(self::$store[$this->bin]) - $this->maxItems;
-		if ($over <= 0) {
-			return;
-		}
-		foreach (array_slice(array_keys(self::$store[$this->bin]), 0, $over) as $cid) {
-			unset(self::$store[$this->bin][$cid]);
+		foreach (array_keys(self::$store[$this->bin]) as $cid) {
+			if (
+				count(self::$store[$this->bin]) <= $this->maxItems &&
+				(self::$bytes[$this->bin] ?? 0) <= $this->maxBytes
+			) {
+				return;
+			}
+			$this->delete($cid);
 		}
 	}
 }
