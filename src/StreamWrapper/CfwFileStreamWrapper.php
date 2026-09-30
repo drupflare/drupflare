@@ -7,6 +7,9 @@ namespace Drupal\drupflare\StreamWrapper;
 use Drupal\Core\StreamWrapper\StreamWrapperInterface;
 use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Host;
+use FilesystemIterator;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 
 /**
  * A `public://` and `private://` stream wrapper backed by the Durable Object's own SQL.
@@ -375,6 +378,11 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	 */
 	public function url_stat($path, $flags): array|false
 	{
+		// a scheme root always exists; `rtrim()` below turns `public://` into `public:`, whose listing
+		// prefix matches nothing, so a copy into it threw on a site that had stored no file there yet
+		if (preg_match('#^[a-z][a-z0-9+.-]*://$#i', $path)) {
+			return self::statArray(0, 0, 040755);
+		}
 		$reply = Host::call('cfwFileStat', ['uri' => $path]);
 		if (($reply['ok'] ?? false) === true) {
 			return self::statArray((int) ($reply['size'] ?? 0), (int) ($reply['modified'] ?? 0));
@@ -723,6 +731,10 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 			return false;
 		}
 
+		if ((((int) ($stat['mode'] ?? 0)) & 0170000) === 040000) {
+			return $this->realpathOfDirectory($uri);
+		}
+
 		$size = (int) ($stat['size'] ?? 0);
 		if ($size > self::REALPATH_MAX_BYTES) {
 			Degradation::record(
@@ -740,7 +752,115 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 		if (is_file($local) && filesize($local) === $size) {
 			return $local;
 		}
+		return $this->materialise($uri, $local) ? $local : false;
+	}
 
+	/**
+	 * The most files a directory may hold to be materialised by {@see realpath()}.
+	 */
+	public const REALPATH_MAX_ENTRIES = 100;
+
+	/**
+	 * The most bytes a directory may hold to be materialised by {@see realpath()}.
+	 */
+	public const REALPATH_MAX_DIRECTORY_BYTES = 4194304;
+
+	/**
+	 * A MEMFS directory holding a copy of every file under a directory uri.
+	 *
+	 * The copy is a snapshot taken at the call: a file written afterwards is not in it, and a call
+	 * again refreshes what changed. A directory above the entry or byte cap answers FALSE and
+	 * records why, rather than filling the isolate.
+	 *
+	 * @return string|false
+	 *   The MEMFS directory, or FALSE.
+	 */
+	private function realpathOfDirectory(string $uri): string|false
+	{
+		$give = static function (string $why): bool {
+			Degradation::record('CfwFileStreamWrapper::realpath', $why);
+			return false;
+		};
+		$prefix = rtrim($uri, '/') . '/';
+		$listing = Host::call('cfwFileList', [
+			'prefix' => $prefix,
+			'limit' => self::REALPATH_MAX_ENTRIES + 1,
+		]);
+		$uris = [];
+		foreach (is_array($listing['files'] ?? null) ? $listing['files'] : [] as $file) {
+			$entry = is_array($file) ? (string) ($file['uri'] ?? '') : '';
+			if ($entry !== '' && str_starts_with($entry, $prefix)) {
+				$uris[] = $entry;
+			}
+		}
+		if (count($uris) > self::REALPATH_MAX_ENTRIES) {
+			return $give(
+				sprintf(
+					'a directory holding more than %d files is not materialised into MEMFS, so code that needs a local directory path will skip it',
+					self::REALPATH_MAX_ENTRIES,
+				),
+			);
+		}
+
+		$root = self::MATERIALISE_DIR . '/' . md5($uri) . '-dir';
+		if (!is_dir($root) && !@mkdir($root, 0777, true)) {
+			return $give('the in-memory staging directory could not be created');
+		}
+		$total = 0;
+		$keep = [];
+		foreach ($uris as $entry) {
+			$relative = substr($entry, strlen($prefix));
+			if (in_array('..', explode('/', $relative), true)) {
+				return $give(
+					'a stored path climbs out of its directory, so the directory is not materialised',
+				);
+			}
+			$stat = $this->url_stat($entry, 0);
+			$size = $stat === false ? 0 : (int) ($stat['size'] ?? 0);
+			$total += $size;
+			if ($size > self::REALPATH_MAX_BYTES || $total > self::REALPATH_MAX_DIRECTORY_BYTES) {
+				return $give(
+					sprintf(
+						'a directory above %d bytes in total is not materialised into MEMFS, so code that needs a local directory path will skip it',
+						self::REALPATH_MAX_DIRECTORY_BYTES,
+					),
+				);
+			}
+			$local = $root . '/' . $relative;
+			$keep[$local] = true;
+			if (is_file($local) && filesize($local) === $size) {
+				continue;
+			}
+			if (!is_dir(dirname($local)) && !@mkdir(dirname($local), 0777, true)) {
+				return $give(
+					'a subdirectory could not be created in the in-memory staging directory',
+				);
+			}
+			if (!$this->materialise($entry, $local)) {
+				return false;
+			}
+		}
+		// a file deleted since the last call must not survive in the snapshot
+		$walk = new RecursiveIteratorIterator(
+			new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+			RecursiveIteratorIterator::CHILD_FIRST,
+		);
+		foreach ($walk as $item) {
+			$path = (string) $item->getPathname();
+			if ($item->isDir()) {
+				@rmdir($path);
+			} elseif (!isset($keep[$path])) {
+				@unlink($path);
+			}
+		}
+		return $root;
+	}
+
+	/**
+	 * Reads one stored file into a MEMFS path, recording why when it cannot.
+	 */
+	private function materialise(string $uri, string $local): bool
+	{
 		// each arm below is the SAME observable outcome as the size refusal above -- a module that
 		// needs a local path skips the file -- and only that one used to say so
 		$give = static function (string $why): bool {
@@ -773,7 +893,7 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 				'a file was materialised only partly and was discarded rather than handed over truncated; the isolate is probably out of memory',
 			);
 		}
-		return $local;
+		return true;
 	}
 
 	/**
