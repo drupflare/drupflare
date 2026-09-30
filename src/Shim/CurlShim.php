@@ -50,6 +50,86 @@ final class CurlShim
 		19913 => 'returntransfer',
 		// CURLOPT_FOLLOWLOCATION
 		52 => 'followlocation',
+		// CURLOPT_HTTPGET
+		80 => 'httpget',
+		// CURLOPT_NOBODY
+		44 => 'nobody',
+		// CURLOPT_HEADER
+		42 => 'header',
+		// CURLOPT_TIMEOUT
+		13 => 'timeout',
+		// CURLOPT_TIMEOUT_MS
+		155 => 'timeout_ms',
+		// CURLOPT_CONNECTTIMEOUT
+		78 => 'connecttimeout',
+		// CURLOPT_CONNECTTIMEOUT_MS
+		156 => 'connecttimeout_ms',
+		// CURLOPT_SSL_VERIFYPEER
+		64 => 'verifypeer',
+		// CURLOPT_SSL_VERIFYHOST
+		81 => 'verifyhost',
+		// CURLOPT_CAINFO
+		10065 => 'cainfo',
+		// CURLOPT_HTTP_VERSION
+		84 => 'http_version',
+		// CURLOPT_SSLVERSION
+		32 => 'sslversion',
+		// CURLOPT_ENCODING
+		10102 => 'encoding',
+		// CURLOPT_FORBID_REUSE
+		75 => 'forbid_reuse',
+		// CURLOPT_NOSIGNAL
+		99 => 'nosignal',
+		// CURLOPT_USERAGENT
+		10018 => 'useragent',
+		// CURLOPT_USERPWD
+		10005 => 'userpwd',
+		// CURLOPT_HTTPAUTH
+		107 => 'httpauth',
+		// CURLOPT_PROXY
+		10004 => 'proxy',
+		// CURLOPT_HEADERFUNCTION
+		20079 => 'headerfunction',
+		// CURLOPT_WRITEFUNCTION
+		20011 => 'writefunction',
+		// CURLINFO_HEADER_OUT, which curl takes as an option
+		2 => 'header_out',
+	];
+
+	/**
+	 * The `CURLINFO_*` values curl_getinfo() takes, mapped to the info array's keys.
+	 */
+	const INFO = [
+		// CURLINFO_EFFECTIVE_URL
+		1048577 => 'url',
+		// CURLINFO_RESPONSE_CODE, which is also CURLINFO_HTTP_CODE
+		2097154 => 'http_code',
+		// CURLINFO_CONTENT_TYPE
+		1048594 => 'content_type',
+		// CURLINFO_TOTAL_TIME
+		3145731 => 'total_time',
+		// CURLINFO_HEADER_SIZE
+		2097163 => 'header_size',
+		// CURLINFO_SIZE_DOWNLOAD
+		3145736 => 'size_download',
+		// CURLINFO_HEADER_OUT
+		2 => 'request_header',
+	];
+
+	/**
+	 * Options accepted and not acted on, each with why ignoring it changes nothing the caller asked for.
+	 *
+	 * @var array<string, string>
+	 */
+	const INERT = [
+		'cainfo' => 'the platform verifies every certificate against its own trust store',
+		'http_version' => 'fetch() negotiates the protocol',
+		'sslversion' => 'fetch() negotiates TLS 1.2 or newer',
+		'encoding' => 'fetch() decompresses the body itself',
+		'forbid_reuse' => 'there is no connection to reuse',
+		'nosignal' => 'there are no signals',
+		'connecttimeout' => 'the host bounds the connection with the whole-request timeout',
+		'connecttimeout_ms' => 'the host bounds the connection with the whole-request timeout',
 	];
 
 	/**
@@ -115,13 +195,33 @@ final class CurlShim
 			'headers' => [],
 			'body' => '',
 			'post' => false,
+			'httpget' => false,
+			'nobody' => false,
+			'header' => false,
 			'returntransfer' => false,
 			'followlocation' => false,
+			'timeout_ms' => 0,
+			'userpwd' => '',
+			'headerfunction' => null,
+			'writefunction' => null,
+			'header_out' => false,
 			'errno' => self::CURLE_OK,
 			'error' => '',
 			'info' => [],
 			'executed' => false,
 		];
+	}
+
+	/**
+	 * Shims curl_reset(): every option back to its default, the URL included.
+	 *
+	 * @param array $handle
+	 *   The handle, by reference.
+	 */
+	public function reset(array &$handle): void
+	{
+		ShimRegistry::assertRouted('curl_reset');
+		$handle = $this->init();
 	}
 
 	/**
@@ -156,16 +256,90 @@ final class CurlShim
 				'one of the ' . count(self::OPTIONS) . ' options CurlShim::OPTIONS lists',
 			);
 		}
-		if ($key === 'headers') {
-			$handle['headers'] = self::parseHeaderList(is_array($value) ? $value : [$value]);
-			return true;
+		switch ($key) {
+			case 'headers':
+				$handle['headers'] = self::parseHeaderList(is_array($value) ? $value : [$value]);
+				return true;
+
+			case 'body':
+				$handle['body'] = is_array($value) ? http_build_query($value) : (string) $value;
+				return true;
+
+			case 'post':
+			case 'httpget':
+			case 'nobody':
+			case 'header':
+			case 'returntransfer':
+			case 'followlocation':
+			case 'header_out':
+				$handle[$key] = (bool) $value;
+				// the three method flags are exclusive in curl: the last one set wins
+				if ($value && in_array($key, ['post', 'httpget', 'nobody'], true)) {
+					foreach (['post', 'httpget', 'nobody'] as $flag) {
+						$handle[$flag] = $flag === $key;
+					}
+				}
+				return true;
+
+			case 'timeout':
+				$handle['timeout_ms'] = max(0, (int) $value) * 1000;
+				return true;
+
+			case 'timeout_ms':
+				$handle['timeout_ms'] = max(0, (int) $value);
+				return true;
+
+			case 'verifypeer':
+				if (!$value) {
+					self::refuseVerify($option, 'CURLOPT_SSL_VERIFYPEER');
+				}
+				return true;
+
+			case 'verifyhost':
+				// 2 is the check; 1 is deprecated and treated as 2 by curl itself
+				if ((int) $value === 0) {
+					self::refuseVerify($option, 'CURLOPT_SSL_VERIFYHOST');
+				}
+				return true;
+
+			case 'useragent':
+				$handle['headers']['User-Agent'] = (string) $value;
+				return true;
+
+			case 'userpwd':
+				$handle['userpwd'] = (string) $value;
+				return true;
+
+			case 'httpauth':
+				// CURLAUTH_BASIC is 1 and CURLAUTH_ANY/ANYSAFE include it; nothing else is spoken
+				if (((int) $value & 1) === 0) {
+					throw new ShimRefusal(
+						'curl_setopt',
+						sprintf(
+							'CURLOPT_HTTPAUTH %d names no scheme this shim sends; only basic authentication is supported.',
+							(int) $value,
+						),
+						'CURLAUTH_BASIC',
+					);
+				}
+				return true;
+
+			case 'proxy':
+				if ((string) $value !== '') {
+					throw new ShimRefusal(
+						'curl_setopt',
+						'CURLOPT_PROXY cannot be honoured: every request leaves through the platform, and sending it direct would bypass a proxy the caller relies on.',
+						'no proxy, or a fetch the platform makes directly',
+					);
+				}
+				return true;
+
+			case 'headerfunction':
+			case 'writefunction':
+				$handle[$key] = is_callable($value) ? $value : null;
+				return true;
 		}
-		if ($key === 'body') {
-			$handle['body'] = is_array($value) ? http_build_query($value) : (string) $value;
-			return true;
-		}
-		if (in_array($key, ['post', 'returntransfer', 'followlocation'], true)) {
-			$handle[$key] = (bool) $value;
+		if (isset(self::INERT[$key])) {
 			return true;
 		}
 		$handle[$key] = (string) $value;
@@ -219,8 +393,9 @@ final class CurlShim
 	 *   The handle, by reference; getinfo() reads what this leaves behind.
 	 *
 	 * @return string|bool
-	 *   The body when one was available, TRUE when the caller did not ask for the transfer, or FALSE
-	 *   when there is no body -- including the deferred case.
+	 *   The body when CURLOPT_RETURNTRANSFER is set. Otherwise TRUE, with the body printed or handed
+	 *   to CURLOPT_WRITEFUNCTION the way curl delivers it. FALSE when there is no body, including the
+	 *   deferred case.
 	 *
 	 * @throws ShimRefusal
 	 *   When no URL was set, because an empty request is not a request.
@@ -238,17 +413,31 @@ final class CurlShim
 		}
 
 		$method = self::resolveMethod($handle);
-		$request = new Request(
-			$method,
-			$url,
-			$handle['headers'] ?? [],
-			(string) ($handle['body'] ?? ''),
-		);
-		$response = ($this->handler)($request, [])->wait();
+		$headers = $handle['headers'] ?? [];
+		if (($handle['userpwd'] ?? '') !== '' && !isset($headers['Authorization'])) {
+			$headers['Authorization'] = 'Basic ' . base64_encode((string) $handle['userpwd']);
+		}
+		$request = new Request($method, $url, $headers, (string) ($handle['body'] ?? ''));
+		$options = [];
+		if (($handle['timeout_ms'] ?? 0) > 0) {
+			$options['timeout'] = $handle['timeout_ms'] / 1000;
+		}
+		if ($handle['followlocation'] ?? false) {
+			$options['allow_redirects'] = true;
+		}
+		$response = ($this->handler)($request, $options)->wait();
 
 		$status = $response->getStatusCode();
-		$body = (string) $response->getBody();
+		$body = $method === 'HEAD' ? '' : (string) $response->getBody();
 		$deferred = $response->getHeaderLine('x-cfw-deferred');
+		$headerLines = ['HTTP/1.1 ' . $status . ' ' . $response->getReasonPhrase() . "\r\n"];
+		foreach ($response->getHeaders() as $name => $values) {
+			foreach ($values as $value) {
+				$headerLines[] = $name . ': ' . $value . "\r\n";
+			}
+		}
+		$headerLines[] = "\r\n";
+		$headerBlock = implode('', $headerLines);
 
 		$handle['executed'] = true;
 		$handle['info'] = [
@@ -256,10 +445,15 @@ final class CurlShim
 			'http_code' => $status,
 			'request_method' => $method,
 			'size_download' => strlen($body),
+			'header_size' => strlen($headerBlock),
+			'total_time' => 0.0,
 			'content_type' => $response->getHeaderLine('content-type'),
 			// not a curl field, so a caller can SEE that this never left
 			'cfw_deferred' => $deferred,
 		];
+		if ($handle['header_out'] ?? false) {
+			$handle['info']['request_header'] = self::requestHeaderBlock($request);
+		}
 
 		// a 202 from the queue is not a body, and reporting it as one is the exact
 		// indistinguishable-empty-result failure this layer exists to prevent
@@ -275,10 +469,23 @@ final class CurlShim
 
 		$handle['errno'] = self::CURLE_OK;
 		$handle['error'] = '';
-		if (!($handle['returntransfer'] ?? false)) {
+		if (is_callable($handle['headerfunction'] ?? null)) {
+			foreach ($headerLines as $line) {
+				$handle['headerfunction']($handle, $line);
+			}
+		}
+		$output = $handle['header'] ?? false ? $headerBlock . $body : $body;
+		if (is_callable($handle['writefunction'] ?? null)) {
+			if ($output !== '') {
+				$handle['writefunction']($handle, $output);
+			}
 			return true;
 		}
-		return $body;
+		if ($handle['returntransfer'] ?? false) {
+			return $output;
+		}
+		echo $output;
+		return true;
 	}
 
 	/**
@@ -286,8 +493,8 @@ final class CurlShim
 	 *
 	 * @param array $handle
 	 *   The handle.
-	 * @param string|null $key
-	 *   A single field, or NULL for all of them.
+	 * @param int|string|null $key
+	 *   A CURLINFO_* value, an info-array field name, or NULL for all of them.
 	 *
 	 * @return mixed
 	 *   The field, the whole array, or NULL for an unknown field.
@@ -295,7 +502,7 @@ final class CurlShim
 	 * @throws ShimRefusal
 	 *   When exec() has not run, because empty info would read as a failed request.
 	 */
-	public function getinfo(array $handle, ?string $key = null): mixed
+	public function getinfo(array $handle, int|string|null $key = null): mixed
 	{
 		ShimRegistry::assertRouted('curl_getinfo');
 		if (!($handle['executed'] ?? false)) {
@@ -307,6 +514,9 @@ final class CurlShim
 		}
 		if ($key === null) {
 			return $handle['info'];
+		}
+		if (is_int($key) || ctype_digit($key)) {
+			$key = self::INFO[(int) $key] ?? '';
 		}
 		return $handle['info'][$key] ?? null;
 	}
@@ -362,10 +572,52 @@ final class CurlShim
 		if ($explicit !== '') {
 			return $explicit;
 		}
+		if ($handle['nobody'] ?? false) {
+			return 'HEAD';
+		}
+		if ($handle['httpget'] ?? false) {
+			return 'GET';
+		}
 		if (($handle['post'] ?? false) || (string) ($handle['body'] ?? '') !== '') {
 			return 'POST';
 		}
 		return 'GET';
+	}
+
+	/**
+	 * The request as curl reports it under CURLINFO_HEADER_OUT.
+	 */
+	private static function requestHeaderBlock(Request $request): string
+	{
+		$target = $request->getUri()->getPath() ?: '/';
+		$query = $request->getUri()->getQuery();
+		$block = $request->getMethod() . ' ' . $target . ($query !== '' ? '?' . $query : '');
+		$block .= " HTTP/1.1\r\nHost: " . $request->getUri()->getHost() . "\r\n";
+		foreach ($request->getHeaders() as $name => $values) {
+			if (strcasecmp((string) $name, 'Host') !== 0) {
+				$block .= $name . ': ' . implode(', ', $values) . "\r\n";
+			}
+		}
+		return $block . "\r\n";
+	}
+
+	/**
+	 * Refuses switching certificate verification off, which the platform cannot do.
+	 *
+	 * @throws ShimRefusal
+	 *   Always.
+	 */
+	private static function refuseVerify(int $option, string $name): never
+	{
+		throw new ShimRefusal(
+			'curl_setopt',
+			sprintf(
+				'%s (option %d) off cannot be honoured: fetch() always verifies the certificate, and accepting the option would report an insecure request that never happened.',
+				$name,
+				$option,
+			),
+			'leave verification on',
+		);
 	}
 
 	/**

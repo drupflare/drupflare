@@ -52,7 +52,8 @@ final class ShimRegistry
 			'curl_setopt' => [
 				'verdict' => self::ROUTE,
 				'via' => 'CfwDeferredHttp',
-				'why' => 'The URL, method, headers and body options map onto a PSR-7 request.',
+				'why' =>
+					'The URL, method, headers, body, timeout and callback options map onto a PSR-7 request; turning certificate verification off or naming a proxy is refused.',
 				'alternative' => '',
 			],
 			'curl_setopt_array' => [
@@ -73,6 +74,13 @@ final class ShimRegistry
 				'verdict' => self::ROUTE,
 				'via' => 'CfwDeferredHttp',
 				'why' => 'Reports what the handle actually did, including the deferred 202.',
+				'alternative' => '',
+			],
+			'curl_reset' => [
+				'verdict' => self::ROUTE,
+				'via' => 'CfwDeferredHttp',
+				'why' =>
+					'Returns the handle array to its defaults; there is no connection to keep.',
 				'alternative' => '',
 			],
 			'curl_close' => [
@@ -179,31 +187,83 @@ final class ShimRegistry
 				'why' => 'publicDecrypt(), the other half of openssl_private_encrypt().',
 				'alternative' => '',
 			],
-			'imagecreatetruecolor' => [
+			'openssl_encrypt' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' =>
+					'createCipheriv() for AES CBC, CTR, ECB and GCM, synchronous; key and IV are sized the way ext-openssl sizes them, and the GCM tag comes back by reference.',
+				'alternative' => '',
+			],
+			'openssl_decrypt' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' => 'createDecipheriv(); a GCM tag that does not authenticate answers FALSE.',
+				'alternative' => '',
+			],
+			'openssl_pkey_get_private' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' =>
+					'createPrivateKey(), which also decrypts a passphrase-protected PEM; returns an OpenSSLAsymmetricKey stand-in holding the PEM.',
+				'alternative' => '',
+			],
+			'openssl_pkey_get_details' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' =>
+					'KeyObject details plus a JWK export: bits, the public PEM, the key type and the RSA or EC parameters.',
+				'alternative' => '',
+			],
+			'openssl_pkey_derive' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' =>
+					'createECDH() over the raw scalar and point; workerd\'s diffieHellman() refuses EC keys.',
+				'alternative' => '',
+			],
+			'openssl_public_encrypt' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' => 'publicEncrypt() with PKCS#1 v1.5 or OAEP padding.',
+				'alternative' => '',
+			],
+			'openssl_private_decrypt' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' => 'privateDecrypt() with PKCS#1 v1.5 or OAEP padding.',
+				'alternative' => '',
+			],
+			'openssl_x509_read' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' =>
+					'X509Certificate, returning an OpenSSLCertificate stand-in holding the PEM.',
+				'alternative' => '',
+			],
+			'openssl_x509_parse' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' =>
+					'X509Certificate\'s subject, issuer, serial, validity and subjectAltName, under ext-openssl\'s key names.',
+				'alternative' => '',
+			],
+			'openssl_x509_fingerprint' => [
+				'verdict' => self::ROUTE,
+				'via' => 'node:crypto',
+				'why' => 'A digest of the certificate\'s DER bytes.',
+				'alternative' => '',
+			],
+			'openssl_x509_checkpurpose' => [
 				'verdict' => self::REFUSE,
 				'via' => '',
 				'why' =>
-					'gd is not compiled in: it measured 684,821 bytes against a 3 MB gzipped bundle ceiling, so images are resized at delivery instead.',
-				'alternative' => 'CfwImageToolkit, which rewrites the URL and lets the edge resize',
+					'There is no trust store or purpose table here; the shim answers -1 and records a degradation.',
+				'alternative' =>
+					'openssl_verify() against the issuer key the caller already trusts',
 			],
-			'imagecreatefromstring' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
-				'why' => 'gd is not compiled in; see imagecreatetruecolor().',
-				'alternative' => 'CfwImageToolkit, which rewrites the URL and lets the edge resize',
-			],
-			'imagejpeg' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
-				'why' => 'gd is not compiled in; see imagecreatetruecolor().',
-				'alternative' => 'CfwImageToolkit, which rewrites the URL and lets the edge resize',
-			],
-			'imagepng' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
-				'why' => 'gd is not compiled in; see imagecreatetruecolor().',
-				'alternative' => 'CfwImageToolkit, which rewrites the URL and lets the edge resize',
-			],
+			// #region gd, queued and run by the host
+			...self::gdRows(),
+			// #endregion
 			'getimagesize' => [
 				'verdict' => self::NATIVE,
 				'via' => '',
@@ -211,42 +271,84 @@ final class ShimRegistry
 					'Parses image headers in ext/standard and never went through gd or libjpeg, so it works here; CfwImageToolkit reads its dimensions from it.',
 				'alternative' => '',
 			],
-			'exec' => [
+			'exif_read_data' => [
+				'verdict' => self::ROUTE,
+				'via' => 'Exif',
+				'why' =>
+					'Drupal\\drupflare\\Shim\\Exif reads IFD0 and the Exif sub-IFD of a JPEG or TIFF in PHP; ext-exif is not compiled in.',
+				'alternative' => '',
+			],
+			'transliterator_transliterate' => [
+				'verdict' => self::ROUTE,
+				'via' => 'PhpTransliteration',
+				'why' =>
+					'Drupal\\drupflare\\Shim\\Transliterator serves Any-Latin; Latin-ASCII over core\'s transliteration tables; any other rule is refused by name.',
+				'alternative' => '',
+			],
+			'finfo_open' => [
+				'verdict' => self::ROUTE,
+				'via' => 'Finfo',
+				'why' =>
+					'Drupal\\drupflare\\Shim\\Finfo detects the MIME type from magic bytes; ext-fileinfo is not compiled in.',
+				'alternative' => '',
+			],
+			'mime_content_type' => [
+				'verdict' => self::ROUTE,
+				'via' => 'Finfo',
+				'why' => 'Answered by the same magic-byte table as finfo_open().',
+				'alternative' => '',
+			],
+			'sleep' => [
 				'verdict' => self::REFUSE,
 				'via' => '',
 				'why' =>
-					'There is no shell and no process table in a Worker; nothing can be executed.',
-				'alternative' => 'OpsRegistry, which is why this project does not ship Drush',
+					'The clock does not advance inside a PHP run, so a wait was a spin billed as CPU; the call now returns at once and records a degradation.',
+				'alternative' => 'nothing; a retry loop still works, it just does not pause',
+			],
+			'usleep' => [
+				'verdict' => self::REFUSE,
+				'via' => '',
+				'why' => 'Returns at once and records a degradation; see sleep().',
+				'alternative' => 'nothing; a retry loop still works, it just does not pause',
+			],
+			'exec' => [
+				'verdict' => self::ROUTE,
+				'via' => 'Exec\\Router',
+				'why' =>
+					'There is no shell and no process table; a fixed table of programs is served in-process, and any other line fails as a failed launch (false, exit 127) with a degradation recorded.',
+				'alternative' => '',
 			],
 			'shell_exec' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
-				'why' => 'There is no shell; see exec().',
-				'alternative' => 'OpsRegistry, which is why this project does not ship Drush',
+				'verdict' => self::ROUTE,
+				'via' => 'Exec\\Router',
+				'why' => 'Served by the same router as exec().',
+				'alternative' => '',
 			],
 			'system' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
-				'why' => 'There is no shell; see exec().',
-				'alternative' => 'OpsRegistry, which is why this project does not ship Drush',
+				'verdict' => self::ROUTE,
+				'via' => 'Exec\\Router',
+				'why' => 'Served by the same router as exec().',
+				'alternative' => '',
 			],
 			'passthru' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
-				'why' => 'There is no shell; see exec().',
-				'alternative' => 'OpsRegistry, which is why this project does not ship Drush',
+				'verdict' => self::ROUTE,
+				'via' => 'Exec\\Router',
+				'why' => 'Served by the same router as exec().',
+				'alternative' => '',
 			],
 			'proc_open' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
-				'why' => 'A Worker cannot fork, so there is no child process to attach pipes to.',
-				'alternative' => 'OpsRegistry, which is why this project does not ship Drush',
+				'verdict' => self::ROUTE,
+				'via' => 'Exec\\Router',
+				'why' =>
+					'Returns pipes that carry the served program\'s stdout and stderr, and proc_get_status() and proc_close() report its exit code, which is what Symfony Process needs; a pty is refused.',
+				'alternative' => '',
 			],
 			'popen' => [
-				'verdict' => self::REFUSE,
-				'via' => '',
-				'why' => 'A Worker cannot fork; see proc_open().',
-				'alternative' => 'OpsRegistry, which is why this project does not ship Drush',
+				'verdict' => self::ROUTE,
+				'via' => 'Exec\\Router',
+				'why' =>
+					'A read handle over the served program\'s output; a write handle is refused.',
+				'alternative' => '',
 			],
 			'fsockopen' => [
 				'verdict' => self::REFUSE,
@@ -273,6 +375,72 @@ final class ShimRegistry
 			],
 			// #endregion
 		];
+	}
+
+	/**
+	 * The gd functions: routed ones queue on a handle and run in the host, the rest are refused.
+	 *
+	 * @return array
+	 *   Rows in the shape {@see self::functions()} returns.
+	 */
+	private static function gdRows(): array
+	{
+		$routed = [
+			'imagecreatefromstring' => 'Decodes the header only; the source stays encoded.',
+			'imagecreatefromjpeg' => 'Reads the file and keeps the encoded bytes.',
+			'imagecreatefrompng' => 'Reads the file and keeps the encoded bytes.',
+			'imagecreatefromwebp' => 'Reads the file and keeps the encoded bytes.',
+			'imagecreatefromgif' => 'Reads the file and keeps the encoded bytes.',
+			'imagecreatetruecolor' =>
+				'A blank canvas of the given size; a copy onto all of it fills it.',
+			'imagesx' => 'Reads the tracked width.',
+			'imagesy' => 'Reads the tracked height.',
+			'imagedestroy' => 'A no-op, as in PHP 8.',
+			'imagealphablending' => 'Stored on the handle.',
+			'imagesavealpha' =>
+				'Stored on the handle; a PNG written without it records a degradation.',
+			'imagecopyresampled' =>
+				'Queues a crop and a resize when the copy covers a fresh canvas; any other copy is refused.',
+			'imagecopyresized' => 'As imagecopyresampled(), with the nearest filter.',
+			'imagescale' => 'Queues a resize on a copy of the handle.',
+			'imagecrop' =>
+				'Queues a crop inside the image bounds; a rectangle outside them is refused.',
+			'imagerotate' => 'Queues a rotation, with the corner fill passed through.',
+			'imagejpeg' => 'Parks on cfwpark+image:// and the host encodes.',
+			'imagepng' => 'Parks on cfwpark+image:// and the host encodes.',
+			'imagewebp' => 'Parks on cfwpark+image:// and the host encodes.',
+			'imagegif' => 'Parks on cfwpark+image:// and the host encodes.',
+		];
+		$rows = [];
+		foreach ($routed as $name => $why) {
+			$rows[$name] = [
+				'verdict' => self::ROUTE,
+				'via' => 'Shim\\Gd',
+				'why' => $why,
+				'alternative' => '',
+			];
+		}
+		foreach (
+			[
+				'imagesetpixel',
+				'imagecolorallocate',
+				'imagecolorat',
+				'imagefilledrectangle',
+				'imagefill',
+				'imagecopy',
+				'imagecopymerge',
+			]
+			as $name
+		) {
+			$rows[$name] = [
+				'verdict' => self::REFUSE,
+				'via' => '',
+				'why' =>
+					'No pixel is readable or writable from PHP: operations run in the host as a queue on the encoded image.',
+				'alternative' => 'CfwImageToolkit, which rewrites the URL and lets the edge resize',
+			];
+		}
+		return $rows;
 	}
 
 	/**

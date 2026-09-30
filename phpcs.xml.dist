@@ -75,6 +75,9 @@
 	<rule ref="Drupal.NamingConventions.ValidFunctionName.ScopeNotCamelCaps">
 		<exclude-pattern>src/StreamWrapper/HttpsStreamWrapper.php</exclude-pattern>
 		<exclude-pattern>src/StreamWrapper/CfwFileStreamWrapper.php</exclude-pattern>
+		<exclude-pattern>src/Exec/PipeStream.php</exclude-pattern>
+		<exclude-pattern>src/Shim/Finfo.php</exclude-pattern>
+		<exclude-pattern>src/Shim/Transliterator.php</exclude-pattern>
 	</rule>
 
 	<!--
@@ -146,6 +149,7 @@
 		<exclude name="Drupal.Functions.MultiLineFunctionDeclaration.Indent" />
 		<exclude name="Drupal.ControlStructures.ControlSignature.NewlineAfterCloseBrace" />
 		<exclude name="Drupal.Commenting.InlineComment.SpacingAfter" />
+		<exclude name="Squiz.ControlStructures.ForEachLoopDeclaration.SpacingBeforeAs" />
 		<exclude name="Squiz.WhiteSpace.FunctionSpacing.AfterLast" />
 		<exclude name="Squiz.WhiteSpace.FunctionSpacing.BeforeFirst" />
 	</rule>
@@ -155,9 +159,18 @@
 		<exclude-pattern>stubs/*</exclude-pattern>
 	</rule>
 
+	<!--
+		ZipArchive, Finfo and Transliterator mirror the method surface of the PHP extension classes
+		they stand in for, and the PHP manual documents each method. Repeating one-line stubs here
+		would say nothing the manual does not, and Finfo::set_flags() and Transliterator::listIDs()
+		keep the extensions' own names because callers use them.
+	-->
 	<rule ref="Drupal.Commenting.FunctionComment.Missing">
 		<exclude-pattern>stubs/*</exclude-pattern>
 		<exclude-pattern>tests/*</exclude-pattern>
+		<exclude-pattern>src/Shim/ZipArchive.php</exclude-pattern>
+		<exclude-pattern>src/Shim/Finfo.php</exclude-pattern>
+		<exclude-pattern>src/Shim/Transliterator.php</exclude-pattern>
 	</rule>
 
 	<rule ref="Drupal.Classes.FullyQualifiedNamespace.UseStatementMissing">
@@ -168,6 +181,9 @@
 	<rule ref="Drupal.Commenting.VariableComment.Missing">
 		<exclude-pattern>stubs/*</exclude-pattern>
 		<exclude-pattern>tests/*</exclude-pattern>
+		<exclude-pattern>src/Shim/ZipArchive.php</exclude-pattern>
+		<exclude-pattern>src/Shim/Finfo.php</exclude-pattern>
+		<exclude-pattern>src/Shim/Transliterator.php</exclude-pattern>
 	</rule>
 
 	<rule ref="Drupal.Commenting.ClassComment.Missing">
