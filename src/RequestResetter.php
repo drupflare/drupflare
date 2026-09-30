@@ -197,8 +197,48 @@ final class RequestResetter
 		$log['views_page_render_array_cleared'] = $this->clearViewsPageRenderArray();
 		$log['local_tasks_cleared'] = $this->clearLocalTaskData();
 		$log['entity_access_caches_emptied'] = $this->clearEntityAccessCaches();
+		$log['container_loading_cleared'] = $this->clearContainerLoading();
 
 		return $log;
+	}
+
+	/**
+	 * Forgets services the container was still building when a request failed.
+	 *
+	 * `Container::get()` marks an id in `$loading` and unmarks it in a `catch (\Exception)`, so an
+	 * `\Error` from the constructor (a class that did not load) leaves the mark behind. On a
+	 * persistent interpreter every later request then reads that service as a circular reference,
+	 * for the life of the interpreter. Nothing is being built at a request boundary, so any mark
+	 * left here is stale.
+	 *
+	 * @return string[]
+	 *   The ids that were still marked; empty on a clean boundary.
+	 */
+	private function clearContainerLoading(): array
+	{
+		try {
+			$class = new ReflectionObject($this->container);
+			while ($class !== false && !$class->hasProperty('loading')) {
+				$class = $class->getParentClass();
+			}
+			if ($class === false) {
+				return [];
+			}
+			$property = $class->getProperty('loading');
+			$loading = $property->getValue($this->container);
+			if (!is_array($loading) || $loading === []) {
+				return [];
+			}
+			$property->setValue($this->container, []);
+			return array_map('strval', array_keys($loading));
+		} catch (Throwable $e) {
+			Degradation::record(
+				'request reset container loading',
+				'a service that failed to build stays marked as loading, so it reads as a circular reference: ' .
+					$e->getMessage(),
+			);
+			return [];
+		}
 	}
 
 	/**
