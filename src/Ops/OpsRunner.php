@@ -3,13 +3,16 @@
 namespace Drupal\drupflare\Ops;
 
 use Drupal;
+use Drupal\Core\Config\ConfigImporter;
+use Drupal\Core\Config\ConfigImporterFactory;
+use Drupal\Core\Config\StorageComparer;
 use Drupal\Core\Config\StorageInterface;
 use Drupal\user\Entity\Role;
 use Drupal\user\Entity\User;
 use Throwable;
 
 /**
- * Executes the operations {@see OpsRegistry} declares unsliced, plus the paged halves of cex/cim.
+ * Executes the operations {@see OpsRegistry} declares unsliced, plus the paged cex and the stepped cim.
  *
  * The registry said what each operation costs and nothing ran any of them: `/ops` offered eight
  * commands, `status` was the only one that answered, and two of the remaining seven named no driver
@@ -55,8 +58,10 @@ final class OpsRunner
 				'watchdog-show' => self::watchdogShow($args),
 				'cache-clear' => self::cacheClear($args),
 				'queue-list' => self::queueList(),
+				'queue-drain' => self::queueDrain($args, $options),
 				'cex' => self::configExport($options),
 				'cim' => self::configImport($options),
+				'config-write' => self::configWrite($options),
 				default => ['ok' => false, 'error' => sprintf('%s has no driver here', $name)],
 			};
 		} catch (Throwable $e) {
@@ -356,6 +361,64 @@ final class OpsRunner
 	}
 
 	/**
+	 * Runs up to a count of advancedqueue jobs; see {@see QueueDrain}.
+	 *
+	 * @param array $args
+	 *   Positional: a queue id, or none for every queue.
+	 * @param array $options
+	 *   The limit is how many jobs to run.
+	 *
+	 * @return array
+	 *   What ran and what is left.
+	 */
+	private static function queueDrain(array $args, array $options): array
+	{
+		if (!\Drupal::hasService('advancedqueue.processor')) {
+			return ['ok' => false, 'error' => 'advancedqueue is not installed'];
+		}
+		$storage = \Drupal::entityTypeManager()->getStorage('advancedqueue_queue');
+		$requested = (string) ($args[0] ?? '');
+		$ids =
+			$requested === ''
+				? array_map(strval(...), array_keys($storage->loadMultiple()))
+				: [$requested];
+		foreach ($ids as $id) {
+			if ($storage->load($id) === null) {
+				return ['ok' => false, 'error' => sprintf('there is no %s queue', $id)];
+			}
+		}
+		$processor = \Drupal::service('advancedqueue.processor');
+		$cleaned = [];
+		return QueueDrain::run(
+			$ids,
+			(int) ($options['limit'] ?? QueueDrain::DEFAULT_LIMIT),
+			static function (string $id) use ($storage, &$cleaned) {
+				$backend = self::queueBackend($storage->load($id));
+				if (!isset($cleaned[$id])) {
+					$cleaned[$id] = true;
+					$backend->cleanupQueue();
+				}
+				return $backend->claimJob();
+			},
+			static fn(object $job, string $id) => $processor->processJob($job, $storage->load($id)),
+			static fn(string $id): int => (int) (self::queueBackend(
+				$storage->load($id),
+			)->countJobs()['queued'] ?? 0),
+		);
+	}
+
+	/**
+	 * A queue entity's backend plugin.
+	 *
+	 * Called dynamically because advancedqueue is not a dependency of this module, so analysis
+	 * sees the entity as a plain EntityInterface.
+	 */
+	private static function queueBackend(mixed $queue): mixed
+	{
+		return call_user_func([$queue, 'getBackend']);
+	}
+
+	/**
 	 * One page of the active configuration.
 	 *
 	 * @param array $options
@@ -391,11 +454,44 @@ final class OpsRunner
 	}
 
 	/**
-	 * Writes config objects back.
+	 * One beat of a real config import; see {@see ConfigImportStepper}.
 	 *
-	 * NOT `ConfigImporter`. A full import computes a diff over the whole tree, deletes what the
-	 * payload omits and rebuilds the container, which is the sliced cost the registry records. This
-	 * writes exactly the objects it was handed, so a partial payload cannot delete a site.
+	 * @param array $options
+	 *   A payload starts a run; none continues it.
+	 *
+	 * @return array
+	 *   The beat's report.
+	 */
+	private static function configImport(array $options): array
+	{
+		$factory = \Drupal::service(ConfigImporterFactory::class);
+		assert($factory instanceof ConfigImporterFactory);
+		$target = \Drupal::service('config.storage');
+		assert($target instanceof StorageInterface);
+		$build = static function (array $payload, array $collections) use (
+			$factory,
+			$target,
+		): array {
+			$comparer = new StorageComparer(
+				ConfigImportStepper::source($payload, $collections, $target),
+				$target,
+			);
+			return [
+				$factory->get($comparer),
+				$comparer,
+				static function (): void {
+					\Drupal::service('lock.persistent')->release(ConfigImporter::LOCK_NAME);
+				},
+			];
+		};
+		return ConfigImportStepper::step(\Drupal::state(), $build, $options);
+	}
+
+	/**
+	 * Writes config objects straight to the active storage.
+	 *
+	 * NOT `ConfigImporter`: no diff, no deletes, no extension changes, so a partial payload cannot
+	 * delete a site. `cim` is the full import.
 	 *
 	 * @param array $options
 	 *   Carries payload as a name-to-data map.
@@ -403,16 +499,16 @@ final class OpsRunner
 	 * @return array
 	 *   The names written.
 	 */
-	private static function configImport(array $options): array
+	private static function configWrite(array $options): array
 	{
 		$payload = $options['payload'] ?? null;
 		if (!is_array($payload) || $payload === []) {
-			return ['ok' => false, 'error' => 'cim needs a payload of config objects'];
+			return ['ok' => false, 'error' => 'config-write needs a payload of config objects'];
 		}
 		if (count($payload) > self::PAGE) {
 			return [
 				'ok' => false,
-				'error' => sprintf('cim takes at most %d objects per call', self::PAGE),
+				'error' => sprintf('config-write takes at most %d objects per call', self::PAGE),
 			];
 		}
 		$storage = \Drupal::service('config.storage');

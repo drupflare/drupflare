@@ -64,11 +64,12 @@ final class OpsRegistry
 				'cost' => '164 config objects on a standard site',
 			],
 			'cim' => [
-				'label' => 'Import configuration.',
+				'label' =>
+					'Import configuration through the ConfigImporter, a few operations per call.',
 				'writes' => true,
 				'sliced' => true,
 				// a config import can re-enable automated_cron or dblog, which config.drift watches for
-				'cost' => null,
+				'cost' => 'up to 10 config operations per beat; an extension change ends the beat',
 			],
 			'en' => [
 				'label' => 'Install a module.',
@@ -143,6 +144,18 @@ final class OpsRegistry
 				'writes' => false,
 				'sliced' => false,
 				'cost' => 'one bounded read, at most 50 rows',
+			],
+			'queue-drain' => [
+				'label' => 'Run up to a count of advancedqueue jobs.',
+				'writes' => true,
+				'sliced' => false,
+				'cost' => 'one job each; at most 50 per call, repeated while jobs remain',
+			],
+			'config-write' => [
+				'label' => 'Write up to 25 configuration objects straight to the active storage.',
+				'writes' => true,
+				'sliced' => false,
+				'cost' => 'one write per object, no diff and no deletes',
 			],
 			'cache-clear' => [
 				'label' => 'Clear ONE cache bin.',
