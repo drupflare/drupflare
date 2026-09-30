@@ -32,3 +32,8 @@ services:
     arguments: ['@csrf_token']
     tags:
       - { name: event_subscriber }
+
+  drupflare.mailer_transport_factory:
+    class: Drupal\drupflare\Mail\CfwMailTransportFactory
+    tags:
+      - { name: mailer.transport_factory }

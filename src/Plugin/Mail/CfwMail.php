@@ -120,7 +120,7 @@ class CfwMail implements MailInterface
 	 * @return array
 	 *   The settings, or an empty array when the module is not configured here.
 	 */
-	private static function smtpSettings(): array
+	public static function smtpSettings(): array
 	{
 		try {
 			// `getEditable` is not used: this is a read, and the config may not exist
