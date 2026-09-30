@@ -5549,7 +5549,9 @@ ok('and the refusal is recorded', Degradation::isDeclared('Transliterator Any-He
 $docx = $work . '/doc.docx';
 $d = new StandinZip();
 $d->open($docx, StandinZip::CREATE);
+// the layout Word writes: libmagic before 5.46 names the type from the third entry
 $d->addFromString('[Content_Types].xml', '<?xml version="1.0"?><Types/>');
+$d->addFromString('_rels/.rels', '<?xml version="1.0"?><Relationships/>');
 $d->addFromString('word/document.xml', '<w:document/>');
 $d->close();
 $png = base64_decode(
@@ -6524,20 +6526,23 @@ if (function_exists('imagecreatetruecolor') && function_exists('imagewebp')) {
 	ok(
 		'imagescale throws a ValueError for a size that rounds to nothing, as gd does',
 		(function () use ($shim, $native) {
-			$caught = 0;
+			// gd throws here from PHP 8.4, which is what the shim models; 8.3 answers false
+			$native_throws = PHP_VERSION_ID >= 80400;
+			$agree = 0;
 			foreach ([[0, -1], [1, -1]] as [$w, $h]) {
-				foreach (
-					[fn() => Gd::imagescale($shim, $w, $h), fn() => imagescale($native, $w, $h)]
-					as $call
-				) {
-					try {
-						$call();
-					} catch (ValueError) {
-						$caught++;
-					}
+				try {
+					Gd::imagescale($shim, $w, $h);
+				} catch (ValueError) {
+					$agree++;
+				}
+				try {
+					$answer = imagescale($native, $w, $h);
+					$agree += !$native_throws && $answer === false ? 1 : 0;
+				} catch (ValueError) {
+					$agree += $native_throws ? 1 : 0;
 				}
 			}
-			return $caught === 4;
+			return $agree === 4;
 		})(),
 	);
 
