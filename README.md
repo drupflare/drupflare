@@ -61,7 +61,13 @@ Images and Workers Logs. Drupal's mail system, image toolkit, HTTP transport and
 | `Network\CfwTcp`                      | `fsockopen()`                            | `cfwTcp`                                           |
 | `Network\CfwOidc`                     | an in-request token exchange             | `cfwOidcClaims`                                    |
 | `Shim\ShimRegistry`                   | absent `openssl_*` and `curl_*` builtins | `cfwHmac`, `cfwDigest`, `cfwRandom`                |
+| `Exec\Router`                         | `exec()`, `proc_open()` and the family   | the park (`cfwpark+fetch://`, `cfwpark+sleep://`)  |
+| `Shim\Gd`                             | `gd`, for the common upload path         | the park (`cfwpark+image://`)                      |
+| `Mail\CfwMailTransport`               | symfony_mailer's SMTP socket             | `cfwMail`                                          |
 | `Ops\OpsRunner`                       | Drush over a shell                       | -                                                  |
+| `Ops\ConfigImportStepper`             | `config:import` in one request           | -                                                  |
+| `Ops\QueueDrain`                      | advancedqueue's time-limited processor   | -                                                  |
+| `Terminate`                           | the shutdown and terminate phase         | -                                                  |
 | `Controller\StatusController`         | an admin page with nowhere to read from  | `cfwServeStats`                                    |
 | `Cache\MemoizedCacheContextsManager`  | recomputing an identical token list      | -                                                  |
 | `DrupflareServiceProvider`            | -                                        | swaps `http_handler_stack`, builds the resetter    |
@@ -243,9 +249,9 @@ persistent kernel is about to serve stale pages, so treat it as a failure rather
 
 | Lane                       | Command                                    | Count    | Needs                              |
 | -------------------------- | ------------------------------------------ | -------- | ---------------------------------- |
-| syntax                     | `php tests/lint.php`                       | 70 files | nothing but PHP                    |
-| the health layer           | `php tests/health-suite.php`               | **744**  | nothing but PHP                    |
-| class loading and refusals | `php tests/load-classes.php <drupal-root>` | **110**  | a Drupal 11.3+ root with `vendor/` |
+| syntax                     | `php tests/lint.php`                       | 95 files | nothing but PHP                    |
+| the health layer           | `php tests/health-suite.php`               | **1098** | nothing but PHP                    |
+| class loading and refusals | `php tests/load-classes.php <drupal-root>` | **112**  | a Drupal 11.3+ root with `vendor/` |
 | the capabilities executing | `curl localhost:8787/capability`           | **26**   | `drupflare/worker` running         |
 
 Each suite ends in `exit()`, so coverage runs one per process. With no suite named it runs them
@@ -318,6 +324,19 @@ Properties of the runtime.
   rejects unknown headers, so only `Cc`, `Bcc`, `In-Reply-To` and `References` pass through.
 - **A style with an effect the delivery path cannot express serves the original.** Crop, rotate and
   desaturate are among them. See `ImageDelivery` above.
+- **`exec()` and the process family serve a fixed table of programs.** `Exec\Router` tokenises
+  the line itself and refuses pipes, redirects, `&`, `;`, substitution and globs with a named
+  reason. Programs outside the table fail as a failed launch (`false`, exit 127) and record a
+  degradation.
+- **`gd` is a queue of crop, resize and rotate operations.** A copy onto anything but a fresh
+  canvas, a crop outside the image and every per-pixel function are refused or undefined, and
+  `extension_loaded('gd')` stays false.
+- **symfony_mailer needs a `cfwmail://default` DSN.** The transport sends text and html and
+  refuses a message with attachments.
+- **`config:import` runs in beats.** `cim` runs up to ten operations per call and reports what is
+  left; an extension change ends the beat.
+- **`Terminate::drain()` runs shutdown callbacks and the TERMINATE subscribers named in the
+  `drupflare_terminate_subscribers` setting.** automated_cron is refused by name.
 - **`Host::call()` cannot carry a wide integer as a number.** It goes through `pw_encode()` and
   arrives as a decimal string or a codec envelope; a plain number above 2^53 comes back rounded,
   because the envelope is JSON and a JSON number is a double.

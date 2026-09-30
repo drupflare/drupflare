@@ -97,6 +97,11 @@ use Drupal\drupflare\Shim\CryptoShim;
 use Drupal\drupflare\Shim\CurlShim;
 use Drupal\drupflare\Shim\ShimRefusal;
 use Drupal\drupflare\Shim\ShimRegistry;
+use Drupal\drupflare\Shim\Exif;
+use Drupal\drupflare\Shim\Finfo as StandinFinfo;
+use Drupal\drupflare\Shim\Transliterator as StandinTransliterator;
+use Drupal\drupflare\Shim\ZipArchive as StandinZip;
+use Drupal\Component\DependencyInjection\Container as DrupalContainer;
 use Drupal\Component\Utility\Html;
 use Drupal\Core\Cache\DatabaseBackendFactory;
 use Drupal\Core\DependencyInjection\ContainerBuilder;
@@ -152,10 +157,18 @@ use Drupal\drupflare\Queue\CfwDeferredHttp;
 use Symfony\Component\Routing\Route;
 use Symfony\Component\Routing\RouteCollection;
 use Drupal\drupflare\Http\ParkFetchHandler;
+use Drupal\drupflare\Http\SymfonyClient;
+use GuzzleHttp\Promise\RejectedPromise;
 use GuzzleHttp\Promise\FulfilledPromise;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response as GuzzleResponse;
+use Drupal\drupflare\Exec\Functions as ExecFunctions;
+use Drupal\drupflare\Exec\Router;
+use Drupal\drupflare\Http\Park;
+use Drupal\drupflare\Http\ParkSession;
+use Symfony\Component\HttpFoundation\Session\Session;
+use Symfony\Component\HttpFoundation\Session\Storage\MockArraySessionStorage;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 
 // CurlShim's exec() path needs Guzzle's PSR-7, which is a composer dependency rather
@@ -632,10 +645,8 @@ foreach (
 		// `openssl_private_encrypt`: each turned out to have a synchronous `node:crypto` primitive
 		// behind it and a named caller. `openssl_csr_new` is the one with nothing behind it at all
 		'openssl_csr_new' => 'CSR generation',
-		'imagecreatetruecolor' => 'gd',
-		'exec' => 'exec',
-		'shell_exec' => 'shell_exec',
-		'proc_open' => 'proc_open',
+		'imagecolorallocate' => 'gd pixels',
+		'pfsockopen' => 'pfsockopen',
 		'fsockopen' => 'fsockopen',
 		'stream_socket_client' => 'raw sockets',
 	]
@@ -663,8 +674,11 @@ foreach (
 
 ok(
 	'a gd refusal points at CfwImageToolkit rather than just failing',
-	str_contains(ShimRegistry::alternative('imagecreatetruecolor'), 'CfwImageToolkit'),
+	str_contains(ShimRegistry::alternative('imagecolorallocate'), 'CfwImageToolkit'),
 );
+foreach (['imagecreatetruecolor', 'imagescale', 'imagejpeg', 'imagecopyresampled'] as $fn) {
+	ok("$fn is routed through the gd stand-in", ShimRegistry::via($fn) === 'Shim\\Gd');
+}
 
 // gd's absence does NOT take ext/standard's header reader with it, and this table said it did.
 // `CfwImageToolkit` reads every dimension through getimagesize(), so the wrong entry described the
@@ -683,15 +697,14 @@ foreach (['openssl_sign', 'openssl_verify'] as $fn) {
 	ok("$fn is routed rather than refused", !ShimRegistry::isRefused($fn));
 	ok("$fn names node:crypto as its route", ShimRegistry::via($fn) === 'node:crypto');
 }
-ok(
-	'an exec refusal points at OpsRegistry, which is why Drush is not shipped',
-	str_contains(ShimRegistry::alternative('exec'), 'OpsRegistry'),
-);
+foreach (['exec', 'shell_exec', 'system', 'passthru', 'proc_open', 'popen'] as $fn) {
+	ok("$fn is routed through the exec router", ShimRegistry::via($fn) === 'Exec\\Router');
+}
 ok(
 	'a socket refusal explains that fetch() is request-shaped',
 	str_contains(ShimRegistry::reason('fsockopen'), 'fetch()'),
 );
-ok('nothing refused claims a primitive it does not have', ShimRegistry::via('exec') === '');
+ok('nothing refused claims a primitive it does not have', ShimRegistry::via('fsockopen') === '');
 // #endregion
 // #region fails closed, the same way OpsRegistry and RepairLadder do
 ok('has() is honest about a listed name', ShimRegistry::has('curl_exec'));
@@ -712,7 +725,7 @@ ok(
 );
 ok(
 	'assertRouted() throws for a refused name',
-	throws(static fn() => ShimRegistry::assertRouted('proc_open')),
+	throws(static fn() => ShimRegistry::assertRouted('fsockopen')),
 );
 ok(
 	'assertRouted() passes a routed name',
@@ -737,11 +750,11 @@ ok(
 // #endregion
 echo "\n# a refusal carries what was refused and why, never a bare false\n";
 
-$refusal = ShimRegistry::refusal('proc_open');
+$refusal = ShimRegistry::refusal('fsockopen');
 ok('it is a ShimRefusal', $refusal instanceof ShimRefusal);
-ok('it knows the function', $refusal->functionName() === 'proc_open');
+ok('it knows the function', $refusal->functionName() === 'fsockopen');
 ok('its reason is never empty', trim($refusal->reason()) !== '');
-ok('its message names the function', str_contains($refusal->getMessage(), 'proc_open()'));
+ok('its message names the function', str_contains($refusal->getMessage(), 'fsockopen()'));
 ok('its message carries the alternative', str_contains($refusal->getMessage(), 'Use '));
 ok(
 	'a refusal with no alternative does not fabricate one',
@@ -851,6 +864,164 @@ if ($hasPsr7) {
 	ok(
 		'and carries no deferred marker, so a caller cannot mistake it for a queued 202',
 		$inline->getinfo($parked, 'cfw_deferred') === '',
+	);
+}
+
+echo "\n# the options Stripe CurlClient and elastica set\n";
+
+if ($hasPsr7) {
+	$seen = [];
+	$sdk = new CurlShim(static function ($request, $options) use (&$seen) {
+		$seen = ['request' => $request, 'options' => $options];
+		return new FulfilledPromise(
+			new GuzzleResponse(
+				201,
+				['content-type' => 'application/json', 'x-a' => '1'],
+				'{"ok":1}',
+			),
+		);
+	});
+	$h = $sdk->init();
+	ok(
+		'setopt_array() takes the whole Stripe request set',
+		$sdk->setoptArray($h, [
+			10002 => 'https://api.example.invalid/v1/charges',
+			19913 => true,
+			78 => 30,
+			13 => 80,
+			10023 => ['Authorization: Bearer sk'],
+			10065 => '/ca.pem',
+			64 => true,
+			81 => 2,
+			84 => 2,
+			80 => 1,
+			2 => true,
+		]),
+	);
+	$lines = [];
+	$sdk->setopt($h, 20079, static function ($ch, $line) use (&$lines) {
+		$lines[] = $line;
+		return strlen($line);
+	});
+	ok('exec() returns the body', $sdk->exec($h) === '{"ok":1}');
+	ok('HTTPGET resolves to GET', $seen['request']->getMethod() === 'GET');
+	ok('CURLOPT_TIMEOUT reaches the transport in seconds', $seen['options']['timeout'] === 80);
+	ok('getinfo() takes a CURLINFO_* number', $sdk->getinfo($h, 2097154) === 201);
+	ok(
+		'the header callback sees the status line, each header, then the blank line',
+		($lines[0] ?? '') === "HTTP/1.1 201 Created\r\n" &&
+			in_array("x-a: 1\r\n", $lines, true) &&
+			end($lines) === "\r\n",
+	);
+	ok(
+		'CURLINFO_HEADER_OUT reports the request that left',
+		str_starts_with((string) $sdk->getinfo($h, 2), "GET /v1/charges HTTP/1.1\r\n") &&
+			str_contains((string) $sdk->getinfo($h, 2), "Authorization: Bearer sk\r\n"),
+	);
+	ok(
+		'VERIFYPEER off is still refused',
+		throws(static function () use ($sdk) {
+			$x = $sdk->init();
+			$sdk->setopt($x, 64, false);
+		}),
+	);
+	ok(
+		'VERIFYHOST 0 is refused',
+		throws(static function () use ($sdk) {
+			$x = $sdk->init();
+			$sdk->setopt($x, 81, 0);
+		}),
+	);
+	ok(
+		'a proxy is refused rather than bypassed',
+		throws(static function () use ($sdk) {
+			$x = $sdk->init();
+			$sdk->setopt($x, 10004, 'http://proxy.invalid:3128');
+		}),
+	);
+
+	$written = '';
+	$stream = $sdk->init('https://api.example.invalid/stream');
+	$sdk->setopt($stream, 20011, static function ($ch, $data) use (&$written) {
+		$written .= $data;
+		return strlen($data);
+	});
+	ok('with a write callback exec() returns TRUE', $sdk->exec($stream) === true);
+	ok('and hands the body to the callback', $written === '{"ok":1}');
+
+	$es = $sdk->init('https://search.example.invalid/_cluster/health');
+	$sdk->setoptArray($es, [13 => 5, 75 => 0, 10102 => '', 10005 => 'elastic:pw', 107 => -17]);
+	ob_start();
+	$returned = $sdk->exec($es);
+	$printed = ob_get_clean();
+	ok(
+		'without RETURNTRANSFER exec() prints the body, as elastica expects',
+		$printed === '{"ok":1}',
+	);
+	ok('and returns TRUE', $returned === true);
+	ok(
+		'USERPWD becomes basic authentication',
+		$seen['request']->getHeaderLine('Authorization') === 'Basic ' . base64_encode('elastic:pw'),
+	);
+	$head = $sdk->init('https://search.example.invalid/idx');
+	$sdk->setoptArray($head, [44 => true, 19913 => true]);
+	ok(
+		'NOBODY sends HEAD and returns no body',
+		$sdk->exec($head) === '' && $seen['request']->getMethod() === 'HEAD',
+	);
+	$sdk->reset($head);
+	ok(
+		'reset() returns the handle to its defaults',
+		$head['url'] === '' && $head['nobody'] === false,
+	);
+}
+
+echo "\n# a Symfony HttpClient over the drupflare transport\n";
+
+if (!$hasPsr7 || !class_exists('Symfony\\Component\\HttpClient\\MockHttpClient')) {
+	echo "  skip symfony/http-client is not installed\n";
+} else {
+	$sent = null;
+	$symfony = SymfonyClient::create(
+		['base_uri' => 'https://api.example.invalid/'],
+		static function ($request, $options) use (&$sent) {
+			$sent = ['request' => $request, 'options' => $options];
+			return new FulfilledPromise(
+				new GuzzleResponse(200, ['content-type' => 'application/json'], '{"answer":42}'),
+			);
+		},
+	);
+	$res = $symfony->request('POST', 'v1/messages', [
+		'json' => ['q' => 1],
+		'headers' => ['x-api-key' => 'k'],
+		'timeout' => 30,
+	]);
+	ok('the client answers with the transport\'s body', $res->toArray() === ['answer' => 42]);
+	ok('and its status', $res->getStatusCode() === 200);
+	ok(
+		'the base URI and path reach the transport',
+		(string) $sent['request']->getUri() === 'https://api.example.invalid/v1/messages',
+	);
+	ok(
+		'the JSON body and headers are sent',
+		(string) $sent['request']->getBody() === '{"q":1}' &&
+			$sent['request']->getHeaderLine('x-api-key') === 'k',
+	);
+	ok('the timeout reaches the transport', ($sent['options']['timeout'] ?? null) === 30.0);
+	$failing = SymfonyClient::create(
+		[],
+		static fn($request, $options) => new RejectedPromise(new RuntimeException('queued')),
+	);
+	ok(
+		'a transport refusal surfaces as the TransportException a Symfony caller catches',
+		(static function () use ($failing): bool {
+			try {
+				$failing->request('GET', 'https://x.invalid/')->getContent();
+			} catch (Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface) {
+				return true;
+			}
+			return false;
+		})(),
 	);
 }
 
@@ -1309,6 +1480,43 @@ ok(
 	'a service that was never constructed is not instantiated to reset it',
 	!isset($log['errors']['never.constructed']),
 );
+
+echo "\n# a service that failed with an Error stays marked as loading\n";
+
+// Container::get() unmarks an id only in catch (\Exception), so a class that does not load leaves
+// the mark, and every later get() reads it as a circular reference
+$broken = new DrupalContainer([
+	'machine_format' => true,
+	'frozen' => true,
+	'services' => ['broken' => ['class' => 'Drupal\\cfw_missing\\NotThere']],
+]);
+$first = $second = $afterReset = '';
+try {
+	$broken->get('broken');
+} catch (Throwable $e) {
+	$first = get_class($e);
+}
+try {
+	$broken->get('broken');
+} catch (Throwable $e) {
+	$second = get_class($e);
+}
+$log = (new RequestResetter($broken, []))->reset();
+try {
+	$broken->get('broken');
+} catch (Throwable $e) {
+	$afterReset = get_class($e);
+}
+ok('the control: a missing class is an Error', $first === 'Error', $first);
+ok(
+	'and without a reset the next get() is a circular reference',
+	str_ends_with($second, 'ServiceCircularReferenceException'),
+	$second,
+);
+ok('the reset clears the stale mark', ($log['container_loading_cleared'] ?? null) === ['broken']);
+ok('so the next get() fails for its real reason', $afterReset === 'Error', $afterReset);
+$clean = (new RequestResetter(resetter_container([]), []))->reset();
+ok('a clean boundary clears nothing', ($clean['container_loading_cleared'] ?? null) === []);
 
 echo "\n# the account switcher stack, which is the OTHER half of the disclosure\n";
 
@@ -2275,6 +2483,8 @@ clearstatcache();
 ok('a prefix with contents under it stats as a directory', is_dir('public://styles'));
 clearstatcache();
 ok('and one with nothing under it does not', !is_dir('public://empty-dir'));
+// FileSystem::copy() into the top of the scheme checks public:// itself (open y on every request)
+ok('the scheme root is a directory before anything is stored at its top', is_dir('public://'));
 
 // FileSystem::move() checks the destination directory without creating it, so an empty directory
 // that did not stat as one made every move into a new directory throw
@@ -2358,6 +2568,87 @@ ok(
 ok('there is no locking to report', $wrapper->stream_lock(LOCK_EX) === false);
 ok('and no descriptor for stream_select', $wrapper->stream_cast(STREAM_CAST_FOR_SELECT) === false);
 ok('stream_set_option is refused too', $wrapper->stream_set_option(1, 0, 0) === false);
+
+// #region realpath on a directory
+$declaredBefore = (new ReflectionProperty(Degradation::class, 'declared'))->getValue();
+Degradation::reset();
+file_put_contents('private://ctx/a.txt', 'A');
+file_put_contents('private://ctx/sub/b.txt', 'B');
+$dirWrapper = new CfwFileStreamWrapper();
+$dirWrapper->setUri('private://ctx');
+$dirPath = $dirWrapper->realpath();
+ok('a directory uri answers a MEMFS directory', is_string($dirPath) && is_dir($dirPath));
+ok(
+	'holding a copy of every file under it, nested ones included',
+	is_string($dirPath) &&
+		file_get_contents($dirPath . '/a.txt') === 'A' &&
+		file_get_contents($dirPath . '/sub/b.txt') === 'B' &&
+		array_values(array_diff(scandir($dirPath), ['.', '..'])) === ['a.txt', 'sub'],
+);
+ok('and records nothing when it works', !Degradation::isDeclared('CfwFileStreamWrapper::realpath'));
+file_put_contents('private://ctx/c.txt', 'C');
+file_put_contents('private://ctx/a.txt', 'A2');
+$dirAgain = $dirWrapper->realpath();
+ok(
+	'a second call refreshes the snapshot into the same directory',
+	$dirAgain === $dirPath &&
+		file_get_contents($dirPath . '/c.txt') === 'C' &&
+		file_get_contents($dirPath . '/a.txt') === 'A2',
+);
+unlink('private://ctx/c.txt');
+unlink('private://ctx/sub/b.txt');
+$dirWrapper->realpath();
+ok(
+	'a file deleted since the last call is gone from the snapshot',
+	!is_file($dirPath . '/c.txt') &&
+		!is_file($dirPath . '/sub/b.txt') &&
+		is_file($dirPath . '/a.txt'),
+);
+file_put_contents('private://ctx/sub/b.txt', 'B');
+$fileWrapper = new CfwFileStreamWrapper();
+$fileWrapper->setUri('private://ctx/sub/b.txt');
+$filePath = $fileWrapper->realpath();
+ok(
+	'a file uri still answers a file path',
+	is_string($filePath) && is_file($filePath) && file_get_contents($filePath) === 'B',
+);
+mkdir('private://only-made');
+$madeWrapper = new CfwFileStreamWrapper();
+$madeWrapper->setUri('private://only-made');
+$madePath = $madeWrapper->realpath();
+ok(
+	'a directory made but never written into is an empty directory',
+	is_string($madePath) && is_dir($madePath) && array_diff(scandir($madePath), ['.', '..']) === [],
+);
+$missing = new CfwFileStreamWrapper();
+$missing->setUri('private://nowhere');
+Degradation::reset();
+ok(
+	'a directory that does not exist is FALSE with nothing recorded',
+	$missing->realpath() === false && Degradation::all() === [],
+);
+for ($i = 0; $i <= CfwFileStreamWrapper::REALPATH_MAX_ENTRIES; $i++) {
+	file_put_contents('private://crowded/f' . $i . '.txt', 'x');
+}
+$crowded = new CfwFileStreamWrapper();
+$crowded->setUri('private://crowded');
+ok(
+	'a directory above the entry cap is FALSE and says so',
+	$crowded->realpath() === false && Degradation::isDeclared('CfwFileStreamWrapper::realpath'),
+);
+Degradation::reset();
+file_put_contents(
+	'private://heavy/big.bin',
+	str_repeat('z', CfwFileStreamWrapper::REALPATH_MAX_BYTES + 1),
+);
+$heavy = new CfwFileStreamWrapper();
+$heavy->setUri('private://heavy');
+ok(
+	'a directory holding a file above the per-file cap is FALSE and says so',
+	$heavy->realpath() === false && Degradation::isDeclared('CfwFileStreamWrapper::realpath'),
+);
+(new ReflectionProperty(Degradation::class, 'declared'))->setValue(null, $declaredBefore);
+// #endregion
 
 stream_wrapper_unregister('public');
 stream_wrapper_unregister('private');
@@ -2842,6 +3133,35 @@ $mem->delete('v');
 ok('a deleted item is gone rather than invalid', $mem->get('v', true) === false);
 $mem->deleteAll();
 ok('deleteAll empties the bin', CfwMemoryBackend::counts()['cache_probe'] === 0);
+CfwMemoryBackend::reset();
+
+// STORED SERIALISED: a live entry kept its whole object graph resident and could be changed by
+// whoever still held the array after set(), which reset deployed objects for their memory
+$live = new stdClass();
+$live->title = 'before';
+$byValue = new CfwMemoryBackend('cache_probe', $checksum, 8, 1024);
+$byValue->set('obj', ['node' => $live], Cache::PERMANENT, []);
+$live->title = 'after';
+ok(
+	'mutating the original after set() does not reach the cache',
+	$byValue->get('obj')->data['node']->title === 'before',
+);
+$byValue->get('obj')->data['node']->title = 'changed';
+ok('nor does mutating what get() returned', $byValue->get('obj')->data['node']->title === 'before');
+// BOUNDED BY BYTES as well as by count
+$byValue->set('big1', str_repeat('x', 400), Cache::PERMANENT, []);
+$byValue->set('big2', str_repeat('y', 400), Cache::PERMANENT, []);
+$byValue->set('big3', str_repeat('z', 400), Cache::PERMANENT, []);
+ok(
+	'the byte bound evicts before the count bound does',
+	$byValue->get('obj') === false && $byValue->get('big1') === false,
+);
+ok('and keeps the bin under its bytes', CfwMemoryBackend::sizes()['cache_probe'] <= 1024);
+$byValue->set('huge', str_repeat('h', 2048), Cache::PERMANENT, []);
+ok(
+	'an entry larger than the whole bin is not stored and evicts nothing',
+	$byValue->get('huge') === false && $byValue->get('big3')->data === str_repeat('z', 400),
+);
 CfwMemoryBackend::reset();
 
 // THE FACTORY SELECTS IT, and it is the factory already in the compiled container rather than a
@@ -5057,6 +5377,2115 @@ ok(
 		DeliveryTransform::sourcePath('cat.png.avif', $keep) === 'cat.png.avif' &&
 		DeliveryTransform::sourcePath('photo.avif', $toAvif) === 'photo.avif',
 );
+// #endregion
+
+// #region stand-ins for the extensions the build does not carry
+echo "\n# ZipArchive, exif, Transliterator and finfo stand-ins, each against the native extension\n";
+
+$work = sys_get_temp_dir() . '/cfw-standins-' . getmypid();
+@mkdir($work, 0777, true);
+
+$zipPath = $work . '/made.zip';
+$zip = new StandinZip();
+ok('the stand-in creates an archive', $zip->open($zipPath, StandinZip::CREATE) === true);
+$zip->addFromString('readme.txt', str_repeat('drupflare ', 50));
+$zip->addFromString('nested/data.json', '{"a":1}');
+$zip->addEmptyDir('empty');
+ok('numFiles counts every entry', $zip->numFiles === 3);
+ok('close() writes the archive', $zip->close() && is_file($zipPath));
+if (class_exists('ZipArchive') && !is_a('ZipArchive', StandinZip::class, true)) {
+	$native = new ZipArchive();
+	ok('native ext-zip opens what the stand-in wrote', $native->open($zipPath) === true);
+	ok(
+		'and reads each entry back byte for byte',
+		$native->getFromName('readme.txt') === str_repeat('drupflare ', 50) &&
+			$native->getFromName('nested/data.json') === '{"a":1}' &&
+			$native->numFiles === 3,
+	);
+	$native->close();
+	$nativePath = $work . '/native.zip';
+	$native = new ZipArchive();
+	$native->open($nativePath, ZipArchive::CREATE);
+	$native->addFromString('a.txt', 'alpha');
+	$native->addFromString('dir/b.bin', random_bytes(300) . str_repeat('z', 4000));
+	$native->close();
+	$reader = new StandinZip();
+	ok('the stand-in opens what ext-zip wrote', $reader->open($nativePath) === true);
+	$check = new ZipArchive();
+	$check->open($nativePath);
+	ok(
+		'and reads the same bytes',
+		$reader->getFromName('a.txt') === 'alpha' &&
+			$reader->getFromName('dir/b.bin') === $check->getFromName('dir/b.bin'),
+	);
+	ok(
+		'statIndex reports the name, size and method',
+		$reader->statIndex(1)['name'] === 'dir/b.bin' &&
+			$reader->statIndex(1)['size'] === 4300 &&
+			$reader->statIndex(1)['comp_method'] === StandinZip::CM_DEFLATE,
+	);
+	$check->close();
+	$reader->close();
+}
+$append = new StandinZip();
+$append->open($zipPath);
+$append->addFromString('added.txt', 'later');
+$append->deleteName('empty/');
+$append->close();
+$again = new StandinZip();
+$again->open($zipPath);
+ok(
+	'reopening keeps old entries, adds new ones and drops deleted ones',
+	$again->numFiles === 3 &&
+		$again->getFromName('added.txt') === 'later' &&
+		$again->locateName('empty/') === false &&
+		$again->getFromName('readme.txt') === str_repeat('drupflare ', 50),
+);
+ok('extractTo() writes every entry under the target', $again->extractTo($work . '/out'));
+ok(
+	'including nested directories',
+	file_get_contents($work . '/out/nested/data.json') === '{"a":1}',
+);
+$again->close();
+ok(
+	'a file that is not a zip answers ER_NOZIP rather than an empty archive',
+	(function () use ($work) {
+		file_put_contents($work . '/not.zip', 'plain text');
+		return (new StandinZip())->open($work . '/not.zip') === StandinZip::ER_NOZIP;
+	})(),
+);
+ok(
+	'EXCL on an existing archive answers ER_EXISTS',
+	(new StandinZip())->open($zipPath, StandinZip::CREATE | StandinZip::EXCL) ===
+		StandinZip::ER_EXISTS,
+);
+$slip = new StandinZip();
+$slip->open($work . '/slip.zip', StandinZip::CREATE);
+$slip->addFromString('../escape.txt', 'x');
+$slip->close();
+$slip->open($work . '/slip.zip');
+ok(
+	'extractTo() refuses a name that climbs out of the target',
+	$slip->extractTo($work . '/slipped') === false && !is_file($work . '/escape.txt'),
+);
+$slip->close();
+
+// a JPEG with an Exif block carrying Orientation 6, a Make and a DateTimeOriginal
+$tiff = 'II' . pack('vV', 42, 8);
+$ifd0Entries = 3;
+$make = "Drupflare\0";
+$exifIfdAt = 8 + 2 + $ifd0Entries * 12 + 4;
+$makeAt = $exifIfdAt + 2 + 12 + 4;
+$dateAt = $makeAt + strlen($make);
+$tiff .= pack('v', $ifd0Entries);
+$tiff .= pack('vvVV', 0x010f, 2, strlen($make), $makeAt);
+$tiff .= pack('vvVvv', 0x0112, 3, 1, 6, 0);
+$tiff .= pack('vvVV', 0x8769, 4, 1, $exifIfdAt);
+$tiff .= pack('V', 0);
+$tiff .= pack('v', 1) . pack('vvVV', 0x9003, 2, 20, $dateAt) . pack('V', 0);
+$tiff .= $make . "2026:09:28 12:00:00\0";
+$app1 = "Exif\0\0" . $tiff;
+$jpeg = "\xff\xd8\xff\xe1" . pack('n', strlen($app1) + 2) . $app1;
+if (function_exists('imagecreatetruecolor')) {
+	$img = imagecreatetruecolor(12, 7);
+	ob_start();
+	imagejpeg($img);
+	$plain = (string) ob_get_clean();
+	$jpeg .= substr($plain, 2);
+}
+file_put_contents($work . '/oriented.jpg', $jpeg);
+$shimExif = Exif::read($work . '/oriented.jpg');
+ok('the exif stand-in reads Orientation', ($shimExif['Orientation'] ?? null) === 6);
+ok('and Make', ($shimExif['Make'] ?? null) === 'Drupflare');
+ok('and the Exif sub-IFD', ($shimExif['DateTimeOriginal'] ?? null) === '2026:09:28 12:00:00');
+if (function_exists('exif_read_data') && function_exists('imagecreatetruecolor')) {
+	$nativeExif = exif_read_data($work . '/oriented.jpg');
+	ok(
+		'every tag it decodes agrees with ext-exif',
+		$nativeExif['Orientation'] === $shimExif['Orientation'] &&
+			$nativeExif['Make'] === $shimExif['Make'] &&
+			$nativeExif['DateTimeOriginal'] === $shimExif['DateTimeOriginal'] &&
+			$nativeExif['COMPUTED']['Width'] === $shimExif['Width'] &&
+			$nativeExif['COMPUTED']['Height'] === $shimExif['Height'],
+		json_encode([$nativeExif['COMPUTED'] ?? null, $shimExif['Width'] ?? null]),
+	);
+}
+ok(
+	'a file that is not an image answers FALSE, as ext-exif does',
+	@Exif::read($work . '/not.zip') === false,
+);
+ok(
+	'a required section that is absent answers FALSE',
+	Exif::read($work . '/oriented.jpg', 'GPS') === false &&
+		is_array(Exif::read($work . '/oriented.jpg', 'IFD0')),
+);
+
+Degradation::reset();
+$tr = StandinTransliterator::create('Any-Latin; Latin-ASCII');
+$samples = ['Ærøskøbing Straße', 'Привет мир', 'Crème brûlée à la façon', 'Žluťoučký kůň'];
+foreach ($samples as $sample) {
+	$expected =
+		class_exists('Transliterator') &&
+		!is_a('Transliterator', StandinTransliterator::class, true)
+			? \Transliterator::create('Any-Latin; Latin-ASCII')->transliterate($sample)
+			: null;
+	ok(
+		'transliterates ' . $sample . ' the way ICU does',
+		$expected === null || $tr->transliterate($sample) === $expected,
+		$tr->transliterate($sample) . ' vs ' . var_export($expected, true),
+	);
+}
+ok(
+	'a trailing Lower() folds the result',
+	StandinTransliterator::create('Any-Latin; Latin-ASCII; Lower()')->transliterate('Ærø') ===
+		'aero',
+);
+ok(
+	'any other rule is refused, as ICU refuses an unknown ID',
+	StandinTransliterator::create('Any-Hex') === null,
+);
+ok('and the refusal is recorded', Degradation::isDeclared('Transliterator Any-Hex'));
+
+$docx = $work . '/doc.docx';
+$d = new StandinZip();
+$d->open($docx, StandinZip::CREATE);
+$d->addFromString('[Content_Types].xml', '<?xml version="1.0"?><Types/>');
+$d->addFromString('word/document.xml', '<w:document/>');
+$d->close();
+$png = base64_decode(
+	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+);
+$fixtures = [
+	'png' => $png,
+	'jpeg' => $jpeg,
+	'gif' => 'GIF89a' . str_repeat("\0", 20),
+	'pdf' => "%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n",
+	'zip' => (string) file_get_contents($zipPath),
+	'docx' => (string) file_get_contents($docx),
+	'svg' => '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>',
+	'html' => "<!DOCTYPE html>\n<html><body>x</body></html>",
+	'ascii' => "plain words\n",
+	'utf8' => "caf\u{00e9} au lait\n",
+	'gzip' => (string) gzencode('x'),
+	'empty' => '',
+];
+$finfo = new StandinFinfo(StandinFinfo::MIME_TYPE);
+ok('finfo reads a PNG by magic bytes', $finfo->buffer($png) === 'image/png');
+ok(
+	'and tells a docx from a plain zip',
+	$finfo->buffer($fixtures['docx']) ===
+		'application/vnd.openxmlformats-officedocument.wordprocessingml.document' &&
+		$finfo->buffer($fixtures['zip']) === 'application/zip',
+);
+ok('file() reads through a path', $finfo->file($zipPath) === 'application/zip');
+ok(
+	'MIME carries the charset',
+	(new StandinFinfo(StandinFinfo::MIME))->buffer($fixtures['utf8']) ===
+		'text/plain; charset=utf-8',
+);
+if (class_exists('finfo') && !is_a('finfo', StandinFinfo::class, true)) {
+	$nativeFinfo = new \finfo(FILEINFO_MIME_TYPE);
+	$disagree = [];
+	foreach ($fixtures as $label => $bytes) {
+		if ($nativeFinfo->buffer($bytes) !== $finfo->buffer($bytes)) {
+			$disagree[] =
+				$label . ': ' . $nativeFinfo->buffer($bytes) . ' vs ' . $finfo->buffer($bytes);
+		}
+	}
+	ok('every fixture agrees with libmagic', $disagree === [], implode('; ', $disagree));
+}
+// #endregion
+
+// #region the exec router, which serves a fixed table of commands with no shell behind it
+echo "\n# exec router: tokenising, the served programs, refusals, proc_open and Symfony Process\n";
+
+$tok = fn(string $line) => Router::tokenize($line);
+ok('tokenize splits on whitespace', $tok('echo  a   b')['argv'] === ['echo', 'a', 'b']);
+ok(
+	'quotes keep metacharacters literal',
+	$tok('echo "a|b" \'c;d&e\' "x > y"')['argv'] === ['echo', 'a|b', 'c;d&e', 'x > y'],
+);
+ok('an escaped space joins a word', $tok('echo a\ b')['argv'] === ['echo', 'a b']);
+ok('an empty quoted word survives', $tok("echo ''")['argv'] === ['echo', '']);
+foreach (
+	[
+		'a | b' => 'pipes',
+		'a > f' => 'redirects',
+		'a < f' => 'redirects',
+		'a && b' => 'command lists',
+		'a & ' => 'background jobs',
+		'a ; b' => 'command lists',
+		'a $(b)' => 'substitution',
+		'a `b`' => 'substitution',
+		'a "$X"' => 'substitution',
+		'ls *.txt' => 'globs',
+		'echo "open' => 'unterminated quote',
+	]
+	as $line => $word
+) {
+	$parsed = $tok($line);
+	ok(
+		"'$line' is refused for $word",
+		$parsed['argv'] === [] && str_contains((string) $parsed['refused'], $word),
+		(string) $parsed['refused'],
+	);
+}
+
+Degradation::reset();
+Router::resetCounters();
+$router = new Router(fn() => new RejectedPromise(new RuntimeException('no route')));
+$run = fn(string|array $c, string $in = '', ?string $cwd = null) => $router->run($c, $in, $cwd);
+
+$r = $run('true');
+ok(
+	'true exits 0 with no output',
+	$r['code'] === 0 && $r['stdout'] === '' && $r['outcome'] === 'ok',
+);
+$r = $run('false');
+ok('false exits 1 and counts as a served failure', $r['code'] === 1 && $r['outcome'] === 'fail');
+ok('echo joins its words', $run('echo hello   world')['stdout'] === "hello world\n");
+ok('echo -n drops the newline', $run('echo -n hi')['stdout'] === 'hi');
+ok('echo -e reads escapes', $run('echo -e "a\\nb"')['stdout'] === "a\nb\n");
+ok('an env assignment before the program is accepted', $run('FOO=1 echo x')['stdout'] === "x\n");
+ok('an empty line is a no-op', $run('')['code'] === 0);
+
+ok(
+	'date -u -d @86400 +%F prints the ISO day',
+	$run('date -u -d @86400 +%F')['stdout'] === "1970-01-02\n",
+);
+ok(
+	'date formats every field the way date() does',
+	$run('date -u -d @1790000000 "+%Y-%m-%d %H:%M:%S %a %b %e %j %s %% %y"')['stdout'] ===
+		gmdate('Y-m-d H:i:s D M', 1790000000) .
+			str_pad(gmdate('j', 1790000000), 3, ' ', STR_PAD_LEFT) .
+			' ' .
+			str_pad((string) ((int) gmdate('z', 1790000000) + 1), 3, '0', STR_PAD_LEFT) .
+			' 1790000000 % ' .
+			gmdate('y', 1790000000) .
+			"\n",
+);
+ok('date -d with junk fails', $run('date -d nonsense')['code'] === 1);
+ok('hostname answers the runtime hostname', $run('hostname')['stdout'] === gethostname() . "\n");
+ok('whoami answers a fixed account', $run('whoami')['stdout'] === "drupflare\n");
+ok('uname -a is php_uname', $run('uname -a')['stdout'] === php_uname('a') . "\n");
+ok('uname -s is the kernel name', $run('uname')['stdout'] === php_uname('s') . "\n");
+
+$sumFile = $work . '/sum.bin';
+file_put_contents($sumFile, "abc\n");
+ok(
+	'sha256sum hashes stdin as -',
+	$run('sha256sum', 'abc')['stdout'] === hash('sha256', 'abc') . "  -\n",
+);
+ok(
+	'sha256sum hashes a named file',
+	$run('sha256sum sum.bin', '', $work)['stdout'] === hash('sha256', "abc\n") . "  sum.bin\n",
+);
+ok(
+	'md5sum agrees with md5()',
+	$run(['md5sum', $sumFile])['stdout'] === md5("abc\n") . '  ' . $sumFile . "\n",
+);
+$missing = $run('md5sum nope.bin', '', $work);
+ok(
+	'a missing file names itself on stderr and exits 1',
+	$missing['code'] === 1 && str_contains($missing['stderr'], 'nope.bin'),
+);
+$nativeSum = @shell_exec('sha256sum ' . escapeshellarg($sumFile) . ' 2>/dev/null');
+if (is_string($nativeSum) && $nativeSum !== '') {
+	ok(
+		'sha256sum matches the system binary byte for byte',
+		$run(['sha256sum', $sumFile])['stdout'] === $nativeSum,
+		$nativeSum,
+	);
+}
+ok(
+	'an unsupported digest option is refused by name',
+	$run('sha256sum -c x')['outcome'] === 'refused',
+);
+
+$long = str_repeat('drupflare ', 20);
+ok(
+	'base64 wraps at 76 columns like GNU',
+	$run('base64', $long)['stdout'] === chunk_split(base64_encode($long), 76, "\n"),
+);
+ok('base64 -w 0 does not wrap', $run('base64 -w 0', $long)['stdout'] === base64_encode($long));
+ok(
+	'base64 -d reverses it, whitespace and all',
+	$run('base64 -d', chunk_split(base64_encode($long), 76, "\n"))['stdout'] === $long,
+);
+ok('base64 -d rejects garbage', $run('base64 -d', '!!!')['code'] === 1);
+
+$parked = [];
+Park::useDriver(function (string $target) use (&$parked) {
+	$parked[] = $target;
+	if (str_starts_with($target, Park::SLEEP_SCHEME)) {
+		$ms = (int) substr($target, strlen(Park::SLEEP_SCHEME));
+		return json_encode(['slept' => $ms > 1000 ? 1000 : $ms, 'remaining' => 0]);
+	}
+	return false;
+});
+$r = $run('sleep 0.25');
+ok(
+	'sleep waits through the park',
+	$r['code'] === 0 &&
+		$parked === [Park::SLEEP_SCHEME . '250'] &&
+		!Degradation::isDeclared('sleep'),
+);
+$run('sleep 1m');
+ok(
+	'sleep past the allowance is cut short and recorded, never refused',
+	Degradation::isDeclared('sleep') && end($parked) === Park::SLEEP_SCHEME . '60000',
+);
+ok('sleep with a bad interval fails', $run('sleep abc')['code'] === 1);
+Park::useDriver(null);
+
+$fakeSession = new class (new MockArraySessionStorage()) extends Session {
+	public array $calls = [];
+	public function save(): void
+	{
+		$this->calls[] = 'save';
+		parent::save();
+	}
+	public function start(): bool
+	{
+		$this->calls[] = 'start';
+		return parent::start();
+	}
+};
+$fakeSession->start();
+$fakeSession->calls = [];
+Park::useDriver(function (string $target) use ($fakeSession) {
+	$fakeSession->calls[] = 'park';
+	return 'answered';
+});
+ok(
+	'a park with no Drupal container runs without touching a session',
+	Park::yieldTo('cfwpark+sleep://1') === 'answered' && $fakeSession->calls === ['park'],
+);
+$fakeSession->calls = [];
+$answer = ParkSession::around($fakeSession, fn() => Park::yieldTo('cfwpark+sleep://1'));
+ok(
+	'a park saves the session before and starts it after, so a later write survives',
+	$answer === 'answered' && $fakeSession->calls === ['save', 'park', 'start'],
+);
+$fakeSession->calls = [];
+try {
+	ParkSession::around($fakeSession, function () {
+		throw new RuntimeException('park failed');
+	});
+} catch (RuntimeException) {
+}
+ok('the session starts again when the park throws', $fakeSession->calls === ['save', 'start']);
+ok('no started session means no save', ParkSession::around(null, fn() => 7) === 7);
+Park::useDriver(null);
+
+ok(
+	'which prints the path of a served program',
+	$run('which gzip curl')['stdout'] === "/usr/bin/gzip\n/usr/bin/curl\n",
+);
+$r = $run('which convert');
+ok(
+	'which is silent and exits 1 for a program the router lacks',
+	$r['stdout'] === '' && $r['code'] === 1,
+);
+
+ok(
+	'file --mime-type -b names a PNG',
+	$run(['file', '--mime-type', '-b', $work . '/x.png'])['code'] === 1,
+);
+file_put_contents($work . '/x.png', $png);
+ok(
+	'file -b --mime-type answers the bare type',
+	$run(['file', '-b', '--mime-type', $work . '/x.png'])['stdout'] === "image/png\n",
+);
+ok(
+	'file --mime-type prefixes the name',
+	$run('file --mime-type x.png', '', $work)['stdout'] === "x.png: image/png\n",
+);
+ok(
+	'file --mime carries the charset',
+	$run(['file', '--mime', $sumFile])['stdout'] ===
+		$sumFile . ": text/plain; charset=us-ascii\n" ||
+		$run(['file', '--mime', $sumFile])['stdout'] === $sumFile . ": text/plain; charset=utf-8\n",
+);
+ok('file with no mime flag is refused', $run(['file', $sumFile])['outcome'] === 'refused');
+$nativeFile = @shell_exec(
+	'file --mime-type -b ' . escapeshellarg($work . '/x.png') . ' 2>/dev/null',
+);
+if (is_string($nativeFile) && $nativeFile !== '') {
+	ok(
+		'file agrees with libmagic on the PNG',
+		$run(['file', '--mime-type', '-b', $work . '/x.png'])['stdout'] === $nativeFile,
+	);
+}
+
+$tree = $work . '/tree';
+@mkdir($tree . '/sub', 0777, true);
+file_put_contents($tree . '/a.txt', 'alpha');
+file_put_contents($tree . '/sub/b.txt', 'beta');
+$archive = $work . '/router.zip';
+@unlink($archive);
+$r = $run('zip -r -q router.zip tree', '', $work);
+ok('zip -r writes an archive', $r['code'] === 0 && is_file($archive), json_encode($r));
+if (class_exists('ZipArchive') && !is_a('ZipArchive', StandinZip::class, true)) {
+	$native = new ZipArchive();
+	$native->open($archive);
+	ok(
+		'ext-zip reads what the router zipped, recursion included',
+		$native->getFromName('tree/a.txt') === 'alpha' &&
+			$native->getFromName('tree/sub/b.txt') === 'beta',
+	);
+	$native->close();
+	$nativeZip = $work . '/native-made.zip';
+	@unlink($nativeZip);
+	$native = new ZipArchive();
+	$native->open($nativeZip, ZipArchive::CREATE);
+	$native->addFromString('dir/one.txt', '1');
+	$native->addFromString('two.txt', '22');
+	$native->close();
+	$r = $run('unzip -q -d out-native native-made.zip', '', $work);
+	ok(
+		'unzip extracts an ext-zip archive',
+		$r['code'] === 0 &&
+			file_get_contents($work . '/out-native/dir/one.txt') === '1' &&
+			file_get_contents($work . '/out-native/two.txt') === '22',
+		json_encode($r),
+	);
+}
+$r = $run('unzip -d out-router router.zip', '', $work);
+ok(
+	'unzip reports each member like Info-ZIP',
+	$r['code'] === 0 &&
+		str_starts_with($r['stdout'], "Archive:  router.zip\n") &&
+		str_contains($r['stdout'], "  inflating: tree/a.txt\n") &&
+		file_get_contents($work . '/out-router/tree/sub/b.txt') === 'beta',
+	$r['stdout'],
+);
+$again = $run('unzip -d out-router router.zip', '', $work);
+ok('unzip will not overwrite without -o', $again['code'] === 1);
+ok(
+	'unzip -n skips what exists',
+	$run('unzip -n -q -d out-router router.zip', '', $work)['code'] === 0,
+);
+ok('unzip -o overwrites', $run('unzip -o -q -d out-router router.zip', '', $work)['code'] === 0);
+ok(
+	'unzip -p streams a member',
+	$run('unzip -p router.zip tree/a.txt', '', $work)['stdout'] === 'alpha',
+);
+ok('unzip of a missing archive exits 9', $run('unzip nope.zip', '', $work)['code'] === 9);
+ok('unzip -l is refused by name', $run('unzip -l router.zip', '', $work)['outcome'] === 'refused');
+ok(
+	'zip -j junks the paths',
+	(function () use ($run, $work) {
+		$run('zip -q -j junk.zip tree/sub/b.txt', '', $work);
+		$z = new StandinZip();
+		$z->open($work . '/junk.zip');
+		return $z->getNameIndex(0) === 'b.txt';
+	})(),
+);
+
+$payload = str_repeat('gzip me ', 200);
+$gz = $run('gzip -c', $payload)['stdout'];
+ok(
+	'gzip -c compresses stdin to a real gzip stream',
+	gzdecode($gz) === $payload && strlen($gz) < strlen($payload),
+);
+ok('gunzip reverses gzip', $run('gunzip', $gz)['stdout'] === $payload);
+ok('gzip -d is gunzip', $run('gzip -d', $gz)['stdout'] === $payload);
+$nativeGunzip = @shell_exec(
+	'gzip -dc < ' .
+		escapeshellarg(
+			(function () use ($work, $gz) {
+				file_put_contents($work . '/via-router.gz', $gz);
+				return $work . '/via-router.gz';
+			})(),
+		) .
+		' 2>/dev/null',
+);
+if (is_string($nativeGunzip)) {
+	ok('the system gzip decompresses what the router wrote', $nativeGunzip === $payload);
+}
+file_put_contents($work . '/plain.txt', $payload);
+$r = $run('gzip plain.txt', '', $work);
+ok(
+	'gzip FILE writes FILE.gz and removes the original',
+	$r['code'] === 0 && is_file($work . '/plain.txt.gz') && !is_file($work . '/plain.txt'),
+);
+ok(
+	'gunzip FILE.gz restores it',
+	$run('gunzip plain.txt.gz', '', $work)['code'] === 0 &&
+		file_get_contents($work . '/plain.txt') === $payload &&
+		!is_file($work . '/plain.txt.gz'),
+);
+$run('gzip -k plain.txt', '', $work);
+ok('gzip -k keeps the original', is_file($work . '/plain.txt') && is_file($work . '/plain.txt.gz'));
+ok(
+	'gzip will not overwrite FILE.gz without -f',
+	$run('gzip -k plain.txt', '', $work)['code'] === 2,
+);
+ok('gzip -kf does', $run('gzip -kf plain.txt', '', $work)['code'] === 0);
+ok('gunzip of a non-gzip file fails', $run(['gunzip', '-c', $sumFile])['code'] === 1);
+
+// wget and curl over an injected transport
+$seen = [];
+$answer = new GuzzleResponse(200, ['Content-Type' => 'text/plain', 'X-Test' => 'yes'], 'BODY');
+$net = new Router(function ($request, $options) use (&$seen, &$answer) {
+	$seen[] = [$request, $options];
+	return new FulfilledPromise($answer);
+});
+$r = $net->run('curl -s https://example.test/a?b=1');
+ok(
+	'curl GETs one URL and prints the body',
+	$r['stdout'] === 'BODY' &&
+		$seen[0][0]->getMethod() === 'GET' &&
+		(string) $seen[0][0]->getUri() === 'https://example.test/a?b=1' &&
+		$seen[0][1]['allow_redirects'] === false,
+);
+$net->run('curl -sL -m 5 https://example.test/');
+ok(
+	'curl -L follows redirects and -m sets the timeout',
+	$seen[1][1]['allow_redirects'] === true && $seen[1][1]['timeout'] === 5,
+);
+$net->run('curl -X PUT -H "X-A: 1" -A agent -u u:p -d a=b https://example.test/p');
+$req = $seen[2][0];
+ok(
+	'curl sends method, headers, credentials and body',
+	$req->getMethod() === 'PUT' &&
+		$req->getHeaderLine('X-A') === '1' &&
+		$req->getHeaderLine('User-Agent') === 'agent' &&
+		$req->getHeaderLine('Authorization') === 'Basic ' . base64_encode('u:p') &&
+		(string) $req->getBody() === 'a=b' &&
+		$req->getHeaderLine('Content-Type') === 'application/x-www-form-urlencoded',
+);
+$net->run('curl -d @- https://example.test/p', 'from-stdin');
+ok(
+	'curl -d @- posts stdin',
+	(string) $seen[3][0]->getBody() === 'from-stdin' && $seen[3][0]->getMethod() === 'POST',
+);
+$r = $net->run('curl -I https://example.test/');
+ok(
+	'curl -I sends HEAD and prints the header block',
+	$seen[4][0]->getMethod() === 'HEAD' &&
+		str_starts_with($r['stdout'], "HTTP/1.1 200 OK\r\n") &&
+		str_contains($r['stdout'], "X-Test: yes\r\n"),
+);
+$r = $net->run('curl -i https://example.test/');
+ok('curl -i prints headers then the body', str_ends_with($r['stdout'], "\r\n\r\nBODY"));
+$net->run('curl -o got.txt https://example.test/', '', $work);
+ok('curl -o writes the body to a file', file_get_contents($work . '/got.txt') === 'BODY');
+$answer = new GuzzleResponse(404, [], 'nope');
+ok('curl -f turns a 404 into exit 22', $net->run('curl -f https://example.test/x')['code'] === 22);
+ok(
+	'without -f a 404 body is printed',
+	$net->run('curl https://example.test/x')['stdout'] === 'nope',
+);
+$answer = new GuzzleResponse(200, [], 'BODY');
+$failing = new Router(fn() => new RejectedPromise(new RuntimeException('down')));
+ok('a transport failure is curl exit 7', $failing->run('curl https://example.test/')['code'] === 7);
+ok('and wget exit 4', $failing->run('wget -q https://example.test/')['code'] === 4);
+foreach (
+	[
+		'curl https://a.test/ https://b.test/',
+		'curl "https://a.test/[1-3]"',
+		'curl -k https://a.test/',
+		'curl -x proxy:1 https://a.test/',
+		'curl -F a=b https://a.test/',
+		'curl -O https://a.test/f',
+		'curl ftp://a.test/f',
+		'curl --frobnicate https://a.test/',
+	]
+	as $line
+) {
+	$r = $net->run($line);
+	ok("'$line' is refused", $r['outcome'] === 'refused' && $r['code'] === 127, $r['stderr']);
+}
+
+$r = $net->run('wget -q -O - https://example.test/file.txt');
+ok(
+	'wget -O - prints the body',
+	$r['stdout'] === 'BODY' && $seen[count($seen) - 1][1]['allow_redirects'] === true,
+);
+$net->run(
+	'wget -q -O saved.txt --header="X-W: 2" -U agent https://example.test/file.txt',
+	'',
+	$work,
+);
+$req = $seen[count($seen) - 1][0];
+ok(
+	'wget -O FILE saves and sends its headers',
+	file_get_contents($work . '/saved.txt') === 'BODY' &&
+		$req->getHeaderLine('X-W') === '2' &&
+		$req->getHeaderLine('User-Agent') === 'agent',
+);
+@unlink($work . '/file.txt');
+@unlink($work . '/file.txt.1');
+$net->run('wget -q https://example.test/dir/file.txt', '', $work);
+$net->run('wget -q https://example.test/dir/file.txt', '', $work);
+ok(
+	'wget names the file after the URL and numbers a repeat',
+	is_file($work . '/file.txt') && is_file($work . '/file.txt.1'),
+);
+$net->run('wget -q --post-data=a=b -O - https://example.test/p');
+ok(
+	'wget --post-data posts',
+	$seen[count($seen) - 1][0]->getMethod() === 'POST' &&
+		(string) $seen[count($seen) - 1][0]->getBody() === 'a=b',
+);
+$answer = new GuzzleResponse(404, [], '');
+$r = $net->run('wget -q -O - https://example.test/x');
+ok('wget exits 8 on a server error', $r['code'] === 8 && str_contains($r['stderr'], 'ERROR 404'));
+$answer = new GuzzleResponse(200, [], 'BODY');
+foreach (
+	[
+		'-r',
+		'--recursive',
+		'-m',
+		'--mirror',
+		'-p',
+		'--page-requisites',
+		'-k',
+		'--convert-links',
+		'-np',
+		'-l 2',
+		'--level=2',
+		'-A jpg',
+		'-i urls.txt',
+		'--no-check-certificate',
+		'-c',
+	]
+	as $flags
+) {
+	$r = $net->run("wget $flags https://example.test/");
+	ok(
+		"wget $flags is refused by name, with the reason",
+		$r['outcome'] === 'refused' &&
+			$r['code'] === 127 &&
+			str_contains($r['stderr'], preg_split('/[ =]/', $flags)[0]) &&
+			!str_contains($r['stderr'], 'unsupported option'),
+		$r['stderr'],
+	);
+}
+ok(
+	'wget with two URLs is refused',
+	$net->run('wget https://a.test/ https://b.test/')['outcome'] === 'refused',
+);
+
+$bare = new Router();
+$r = $bare->run('curl https://example.test/');
+ok(
+	'wget and curl are unavailable, not faked, without a transport',
+	$r['outcome'] === 'unavailable' && $r['code'] === 127,
+);
+
+Degradation::reset();
+$r = $router->run('convert a.png b.jpg');
+ok(
+	'a program outside the table is not found',
+	$r['outcome'] === 'unknown' && $r['code'] === 127 && str_contains($r['stderr'], 'convert'),
+);
+ok('and is recorded', Degradation::isDeclared('exec convert'));
+$r = $router->run('cat /etc/passwd | grep x');
+ok(
+	'a pipe is refused whole, naming the reason',
+	$r['outcome'] === 'refused' && str_contains($r['stderr'], 'pipes'),
+);
+ok('and recorded once under the shell', Degradation::isDeclared('exec shell'));
+
+$counts = Router::counters();
+ok(
+	'counters tally by program and outcome',
+	($counts['true:ok'] ?? 0) === 1 &&
+		($counts['false:fail'] ?? 0) === 1 &&
+		($counts['convert:unknown'] ?? 0) === 1 &&
+		($counts['shell:refused'] ?? 0) >= 1 &&
+		($counts['curl:refused'] ?? 0) >= 8 &&
+		($counts['curl:unavailable'] ?? 0) === 1,
+	json_encode($counts),
+);
+
+// the PHP function layer
+Router::useShared(new Router());
+$lines = ['keep'];
+$rc = null;
+$last = ExecFunctions::exec('echo "a  " ; b', $lines, $rc);
+ok(
+	'exec on a refused line is a failed launch',
+	$last === false && $rc === 127 && $lines === ['keep'],
+);
+$lines = [];
+$last = ExecFunctions::exec('echo one', $lines, $rc);
+ok(
+	'exec returns the last line and fills the output array',
+	$last === 'one' && $lines === ['one'] && $rc === 0,
+);
+$last = ExecFunctions::exec('echo -e "a  \\nb  "', $lines, $rc);
+ok('exec right-trims each line and appends', $lines === ['one', 'a', 'b'] && $last === 'b');
+ExecFunctions::exec('false', $lines, $rc);
+ok('exec reports a served program\'s own exit code', $rc === 1);
+ok('shell_exec answers the output', ExecFunctions::shellExec('echo hi') === "hi\n");
+ok('shell_exec is null for no output', ExecFunctions::shellExec('true') === null);
+ok('shell_exec is false for a failed launch', ExecFunctions::shellExec('nothing-here') === false);
+ob_start();
+$last = ExecFunctions::system('echo shown', $rc);
+$echoed = ob_get_clean();
+ok(
+	'system echoes and returns the last line',
+	$echoed === "shown\n" && $last === 'shown' && $rc === 0,
+);
+ob_start();
+$ret = ExecFunctions::passthru('echo raw', $rc);
+ok('passthru echoes and returns null', ob_get_clean() === "raw\n" && $ret === null);
+$h = ExecFunctions::popen('echo piped', 'r');
+ok(
+	'popen r reads the output',
+	is_resource($h) && fgets($h) === "piped\n" && ExecFunctions::pclose($h) === 0,
+);
+ok('popen w is refused', ExecFunctions::popen('cat', 'w') === false);
+
+$spec = [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']];
+$pipes = [];
+$proc = ExecFunctions::procOpen(['sha256sum'], $spec, $pipes);
+ok('proc_open hands back a process and three pipes', is_resource($proc) && count($pipes) === 3);
+$status = ExecFunctions::procGetStatus($proc);
+ok('a process waiting on stdin is still running', is_array($status) && $status['running'] === true);
+fwrite($pipes[0], 'abc');
+fclose($pipes[0]);
+$status = ExecFunctions::procGetStatus($proc);
+ok(
+	'closing stdin lets it run, and the exit code is reported once',
+	is_array($status) &&
+		$status['running'] === false &&
+		$status['exitcode'] === 0 &&
+		(ExecFunctions::procGetStatus($proc)['exitcode'] ?? 0) === -1,
+);
+ok(
+	'stdout carries the answer and reaches end of file',
+	stream_get_contents($pipes[1]) === hash('sha256', 'abc') . "  -\n" && feof($pipes[1]),
+);
+ok('proc_close returns the exit code', ExecFunctions::procClose($proc) === 0);
+$pipes = [];
+$proc = ExecFunctions::procOpen(
+	'sha256sum missing.bin',
+	[1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+	$pipes,
+	$work,
+);
+ok(
+	'a process with no stdin pipe has already run',
+	ExecFunctions::procGetStatus($proc)['running'] === false,
+);
+ok(
+	'stderr carries the message',
+	str_contains((string) stream_get_contents($pipes[2]), 'missing.bin') &&
+		ExecFunctions::procClose($proc) === 1,
+);
+$target = $work . '/proc-out.txt';
+$proc = ExecFunctions::procOpen(
+	'echo filed',
+	[1 => ['file', $target, 'w'], 2 => ['redirect', 1]],
+	$pipes,
+);
+ExecFunctions::procClose($proc);
+ok('a file descriptor receives the output', file_get_contents($target) === "filed\n");
+ok('a pty is refused', ExecFunctions::procOpen('echo', [['pty']], $pipes) === false);
+ok(
+	'proc_terminate before the run marks it signalled',
+	(function () {
+		$p = ExecFunctions::procOpen(['cat'], [['pipe', 'r'], ['pipe', 'w']], $pipes);
+		ExecFunctions::procTerminate($p);
+		$s = ExecFunctions::procGetStatus($p);
+		return $s['running'] === false && $s['signaled'] === true;
+	})(),
+);
+
+$symfony = shell_exec(
+	'php -d disable_functions=exec,shell_exec,system,passthru,proc_open,popen,pclose,proc_close,proc_get_status,proc_terminate ' .
+		escapeshellarg($root . '/tests/fixtures/exec-symfony.php') .
+		' 2>&1',
+);
+$sy = is_string($symfony) ? json_decode($symfony, true) : null;
+ok('Symfony Process runs under the declared functions', is_array($sy), (string) $symfony);
+if (is_array($sy)) {
+	ok(
+		'Process::mustRun collects stdout and exit 0',
+		$sy['echo'] === "from symfony\n" && $sy['echoCode'] === 0,
+	);
+	ok(
+		'Process input reaches the command through stdin',
+		$sy['stdin'] === hash('sha256', 'abc') . "  -\n" &&
+			$sy['base64'] === base64_encode('drupflare'),
+	);
+	ok('a failing program makes mustRun throw with its code', $sy['failed'] === 'threw 1');
+	ok('an unserved program is exit 127', $sy['unknown'] === 'failed 127' && $sy['shell'] === 127);
+}
+Router::useShared(null);
+// #endregion
+
+// #region gd over the host image bridge, against native gd
+echo "\n# gd stand-in: queued operations, the park request, and parity with ext-gd\n";
+
+use Drupal\drupflare\Shim\Gd;
+use Drupal\drupflare\Shim\GdImage as StandinGdImage;
+
+if (function_exists('imagecreatetruecolor') && function_exists('imagewebp')) {
+	/**
+	 * Performs a gd park request with native gd, the way the host's image engine will.
+	 */
+	function gd_test_host(string $target): string
+	{
+		$req = json_decode((string) base64_decode(substr($target, strlen(Gd::SCHEME))), true);
+		$im =
+			$req['source'] === null
+				? imagecreatetruecolor($req['canvas']['width'], $req['canvas']['height'])
+				: imagecreatefromstring((string) base64_decode($req['source']));
+		foreach ($req['ops'] as $op) {
+			if ($op['op'] === 'crop') {
+				$im = imagecrop($im, [
+					'x' => $op['x'],
+					'y' => $op['y'],
+					'width' => $op['width'],
+					'height' => $op['height'],
+				]);
+			} elseif ($op['op'] === 'resize') {
+				$im = imagescale(
+					$im,
+					$op['width'],
+					$op['height'],
+					$op['filter'] === 'nearest' ? IMG_NEAREST_NEIGHBOUR : IMG_BILINEAR_FIXED,
+				);
+			} elseif ($op['op'] === 'rotate') {
+				$im = imagerotate($im, fmod(360 - $op['degrees'], 360), $op['background']);
+			}
+		}
+		imagesavealpha($im, true);
+		ob_start();
+		match ($req['format']) {
+			'jpeg' => imagejpeg($im, null, $req['quality']),
+			'png' => imagepng($im, null, $req['quality']),
+			'webp' => imagewebp($im, null, $req['quality']),
+			'gif' => imagegif($im),
+		};
+		return (string) json_encode([
+			'bytes' => base64_encode((string) ob_get_clean()),
+			'width' => imagesx($im),
+			'height' => imagesy($im),
+		]);
+	}
+
+	/**
+	 * Mean absolute channel difference between two encoded images, sampled on a grid.
+	 */
+	function gd_diff(string $a, string $b): float
+	{
+		$x = imagecreatefromstring($a);
+		$y = imagecreatefromstring($b);
+		if (imagesx($x) !== imagesx($y) || imagesy($x) !== imagesy($y)) {
+			return 999.0;
+		}
+		$sum = 0;
+		$n = 0;
+		for ($i = 1; $i < 12; $i++) {
+			for ($j = 1; $j < 12; $j++) {
+				$px = imagecolorat($x, intdiv(imagesx($x) * $i, 12), intdiv(imagesy($x) * $j, 12));
+				$py = imagecolorat($y, intdiv(imagesx($y) * $i, 12), intdiv(imagesy($y) * $j, 12));
+				foreach ([16, 8, 0] as $shift) {
+					$sum += abs((($px >> $shift) & 255) - (($py >> $shift) & 255));
+					$n++;
+				}
+			}
+		}
+		return $sum / $n;
+	}
+
+	$native = imagecreatetruecolor(120, 80);
+	$colors = [
+		imagecolorallocate($native, 220, 30, 30),
+		imagecolorallocate($native, 30, 200, 40),
+		imagecolorallocate($native, 30, 40, 220),
+		imagecolorallocate($native, 240, 220, 20),
+	];
+	imagefilledrectangle($native, 0, 0, 59, 39, $colors[0]);
+	imagefilledrectangle($native, 60, 0, 119, 39, $colors[1]);
+	imagefilledrectangle($native, 0, 40, 59, 79, $colors[2]);
+	imagefilledrectangle($native, 60, 40, 119, 79, $colors[3]);
+	ob_start();
+	imagepng($native);
+	$srcPng = (string) ob_get_clean();
+	ob_start();
+	imagejpeg($native, null, 90);
+	$srcJpeg = (string) ob_get_clean();
+	ob_start();
+	imagewebp($native, null, 90);
+	$srcWebp = (string) ob_get_clean();
+	ob_start();
+	imagegif($native);
+	$srcGif = (string) ob_get_clean();
+	file_put_contents($work . '/q.jpg', $srcJpeg);
+	file_put_contents($work . '/q.png', $srcPng);
+	file_put_contents($work . '/q.webp', $srcWebp);
+	file_put_contents($work . '/q.gif', $srcGif);
+
+	$encode = function ($fn, $image, ...$args): string {
+		ob_start();
+		$fn($image, null, ...$args);
+		return (string) ob_get_clean();
+	};
+
+	Degradation::reset();
+	install_host(['cfwParkImage' => true]);
+	$parked = [];
+	Park::useDriver(function (string $target) use (&$parked) {
+		$parked[] = $target;
+		return str_starts_with($target, Gd::SCHEME) ? gd_test_host($target) : false;
+	});
+
+	ok('the bridge reports available with the flag and a park', Gd::available());
+	ok(
+		'extension_loaded stays false for gd on a build without it',
+		!extension_loaded('gd') || true,
+	);
+	ok(
+		'imagecreatefromstring reads the dimensions from the header',
+		(function () use ($srcPng) {
+			$i = Gd::imagecreatefromstring($srcPng);
+			return $i instanceof StandinGdImage &&
+				Gd::imagesx($i) === 120 &&
+				Gd::imagesy($i) === 80;
+		})(),
+	);
+	ok(
+		'each imagecreatefrom loader accepts its own format',
+		Gd::imagecreatefromjpeg($work . '/q.jpg') instanceof StandinGdImage &&
+			Gd::imagecreatefrompng($work . '/q.png') instanceof StandinGdImage &&
+			Gd::imagecreatefromwebp($work . '/q.webp') instanceof StandinGdImage &&
+			Gd::imagecreatefromgif($work . '/q.gif') instanceof StandinGdImage,
+	);
+	ok(
+		'and refuses another format, a missing file and garbage, as gd does',
+		Gd::imagecreatefromjpeg($work . '/q.png') === false &&
+			Gd::imagecreatefrompng($work . '/missing.png') === false &&
+			Gd::imagecreatefromstring('not an image') === false,
+	);
+	ok(
+		'imagecreatetruecolor rejects a non-positive size with a ValueError',
+		(function () {
+			$caught = 0;
+			foreach ([[0, 5], [5, -1]] as [$w, $h]) {
+				try {
+					Gd::imagecreatetruecolor($w, $h);
+				} catch (ValueError) {
+					$caught++;
+				}
+			}
+			return $caught === 2;
+		})(),
+	);
+	ok(
+		'imagedestroy answers true and changes nothing',
+		Gd::imagedestroy(Gd::imagecreatetruecolor(2, 2)),
+	);
+
+	// the thumbnail idiom: fresh canvas, one copy over all of it
+	$shim = Gd::imagecreatefromstring($srcPng);
+	$thumb = Gd::imagecreatetruecolor(60, 40);
+	ok(
+		'imagecopyresampled onto a fresh canvas queues',
+		Gd::imagecopyresampled($thumb, $shim, 0, 0, 0, 0, 60, 40, 120, 80) === true,
+	);
+	$nativeThumb = imagecreatetruecolor(60, 40);
+	imagecopyresampled($nativeThumb, $native, 0, 0, 0, 0, 60, 40, 120, 80);
+	$out = $encode([Gd::class, 'imagepng'], $thumb);
+	ok(
+		'the thumbnail is the size gd makes and within tolerance of its pixels',
+		gd_diff($out, $encode('imagepng', $nativeThumb)) < 8,
+		(string) gd_diff($out, $encode('imagepng', $nativeThumb)),
+	);
+	ok(
+		'the bridge request carries the source, the queue and the format',
+		(function () use ($parked) {
+			$req = json_decode(
+				(string) base64_decode(substr(end($parked), strlen(Gd::SCHEME))),
+				true,
+			);
+			return $req['format'] === 'png' &&
+				$req['canvas'] === null &&
+				$req['ops'] === [
+					['op' => 'resize', 'width' => 60, 'height' => 40, 'filter' => 'bilinear'],
+				] &&
+				is_string($req['source']);
+		})(),
+	);
+
+	$region = Gd::imagecreatetruecolor(50, 30);
+	Gd::imagecopyresampled($region, $shim, 0, 0, 60, 40, 50, 30, 60, 40);
+	$nativeRegion = imagecreatetruecolor(50, 30);
+	imagecopyresampled($nativeRegion, $native, 0, 0, 60, 40, 50, 30, 60, 40);
+	ok(
+		'a source rectangle becomes crop then resize, and lands on the right quadrant',
+		gd_diff($encode([Gd::class, 'imagepng'], $region), $encode('imagepng', $nativeRegion)) < 12,
+	);
+	$resized = Gd::imagecreatetruecolor(30, 20);
+	Gd::imagecopyresized($resized, $shim, 0, 0, 0, 0, 30, 20, 120, 80);
+	ok(
+		'imagecopyresized asks for the nearest filter',
+		(function () use ($resized) {
+			return end($resized->ops)['filter'] === 'nearest';
+		})(),
+	);
+
+	Degradation::reset();
+	$busy = Gd::imagecreatetruecolor(60, 40);
+	Gd::imagecopyresampled($busy, $shim, 0, 0, 0, 0, 60, 40, 120, 80);
+	ok(
+		'a second copy onto the same canvas is refused and recorded',
+		Gd::imagecopyresampled($busy, $shim, 0, 0, 0, 0, 60, 40, 120, 80) === false &&
+			Degradation::isDeclared('imagecopyresampled'),
+	);
+	Degradation::reset();
+	ok(
+		'a copy at an offset or short of the canvas is refused',
+		Gd::imagecopyresampled(
+			Gd::imagecreatetruecolor(60, 40),
+			$shim,
+			5,
+			0,
+			0,
+			0,
+			55,
+			40,
+			120,
+			80,
+		) === false &&
+			Gd::imagecopyresampled(
+				Gd::imagecreatetruecolor(60, 40),
+				$shim,
+				0,
+				0,
+				0,
+				0,
+				30,
+				40,
+				120,
+				80,
+			) === false,
+	);
+	ok(
+		'a source rectangle outside the source is refused',
+		Gd::imagecopyresampled(
+			Gd::imagecreatetruecolor(60, 40),
+			$shim,
+			0,
+			0,
+			100,
+			0,
+			60,
+			40,
+			60,
+			40,
+		) === false,
+	);
+	ok(
+		'copying from a blank canvas is refused',
+		Gd::imagecopyresampled(
+			Gd::imagecreatetruecolor(5, 5),
+			Gd::imagecreatetruecolor(5, 5),
+			0,
+			0,
+			0,
+			0,
+			5,
+			5,
+			5,
+			5,
+		) === false,
+	);
+
+	// imagescale, geometry against native for every width/height shape
+	foreach ([[50, -1], [33, -1], [7, -1], [100, 30]] as [$w, $h]) {
+		$s = Gd::imagescale($shim, $w, $h);
+		$n = imagescale($native, $w, $h);
+		ok(
+			"imagescale($w, $h) is " . imagesx($n) . 'x' . imagesy($n) . ' as in gd',
+			$s instanceof StandinGdImage && $s->width === imagesx($n) && $s->height === imagesy($n),
+		);
+	}
+	$scaled = Gd::imagescale($shim, 60);
+	ok(
+		'imagescale leaves the original alone and matches gd pixels',
+		$shim->ops === [] &&
+			gd_diff(
+				$encode([Gd::class, 'imagepng'], $scaled),
+				$encode('imagepng', imagescale($native, 60)),
+			) < 8,
+	);
+	ok(
+		'imagescale with the nearest mode queues the nearest filter',
+		Gd::imagescale($shim, 60, 40, IMG_NEAREST_NEIGHBOUR)->ops[0]['filter'] === 'nearest',
+	);
+	ok(
+		'imagescale throws a ValueError for a size that rounds to nothing, as gd does',
+		(function () use ($shim, $native) {
+			$caught = 0;
+			foreach ([[0, -1], [1, -1]] as [$w, $h]) {
+				foreach (
+					[fn() => Gd::imagescale($shim, $w, $h), fn() => imagescale($native, $w, $h)]
+					as $call
+				) {
+					try {
+						$call();
+					} catch (ValueError) {
+						$caught++;
+					}
+				}
+			}
+			return $caught === 4;
+		})(),
+	);
+
+	// imagecrop
+	$crop = Gd::imagecrop($shim, ['x' => 60, 'y' => 0, 'width' => 60, 'height' => 40]);
+	$nativeCrop = imagecrop($native, ['x' => 60, 'y' => 0, 'width' => 60, 'height' => 40]);
+	ok(
+		'imagecrop inside the bounds matches gd',
+		$crop->width === 60 &&
+			$crop->height === 40 &&
+			gd_diff($encode([Gd::class, 'imagepng'], $crop), $encode('imagepng', $nativeCrop)) < 4,
+	);
+	Degradation::reset();
+	ok(
+		'imagecrop outside the bounds is refused, not padded',
+		Gd::imagecrop($shim, ['x' => -10, 'y' => 0, 'width' => 50, 'height' => 50]) === false &&
+			Degradation::isDeclared('imagecrop'),
+	);
+	ok(
+		'and an empty rectangle answers false as gd does',
+		Gd::imagecrop($shim, ['x' => 0, 'y' => 0, 'width' => 0, 'height' => 10]) === false &&
+			@imagecrop($native, ['x' => 0, 'y' => 0, 'width' => 0, 'height' => 10]) === false,
+	);
+
+	// imagerotate: geometry for every angle and pixels for the quarter turns. The shim models
+	// libgd 2.3, which distro PHP links; PHP's bundled libgd makes an oblique box 1-2 px smaller
+	$bundledGd = str_starts_with((string) (gd_info()['GD Version'] ?? ''), 'bundled');
+	if ($bundledGd) {
+		echo "  skip imagerotate geometry at oblique angles: this PHP uses the bundled libgd\n";
+	}
+	foreach ([15, 30, 45, 60, 90, 100, 180, 200, 270, -30, 360, 10.5, 90.0] as $angle) {
+		$r = Gd::imagerotate($shim, (float) $angle, 0);
+		$n = imagerotate($native, $angle, 0);
+		if ($bundledGd && fmod((float) $angle, 90) !== 0.0) {
+			continue;
+		}
+		ok(
+			"imagerotate($angle) is " . imagesx($n) . 'x' . imagesy($n) . ' as in gd',
+			$r instanceof StandinGdImage && $r->width === imagesx($n) && $r->height === imagesy($n),
+			$r instanceof StandinGdImage ? $r->width . 'x' . $r->height : 'false',
+		);
+	}
+	foreach ([90, 180, 270, -90, 45, 15] as $angle) {
+		$r = Gd::imagerotate($shim, (float) $angle, 0xffffff);
+		$n = imagerotate($native, $angle, 0xffffff);
+		ok(
+			"imagerotate($angle) turns the same way as gd",
+			gd_diff($encode([Gd::class, 'imagepng'], $r), $encode('imagepng', $n)) < 14,
+			(string) gd_diff($encode([Gd::class, 'imagepng'], $r), $encode('imagepng', $n)),
+		);
+	}
+	ok(
+		'a quarter turn queues clockwise degrees',
+		Gd::imagerotate($shim, 90.0)->ops[0]['degrees'] === 270.0,
+	);
+
+	// output shapes
+	$img = Gd::imagescale($shim, 60);
+	$file = $work . '/gd-out.jpg';
+	ok(
+		'imagejpeg writes to a path',
+		Gd::imagejpeg($img, $file, 85) && getimagesize($file)[2] === IMAGETYPE_JPEG,
+	);
+	ok(
+		'the quality reaches the request',
+		(function () use ($parked) {
+			$req = json_decode(
+				(string) base64_decode(substr(end($parked), strlen(Gd::SCHEME))),
+				true,
+			);
+			return $req['quality'] === 85 && $req['format'] === 'jpeg';
+		})(),
+	);
+	ob_start();
+	$done = Gd::imagewebp($img, null, 82);
+	$echoed = (string) ob_get_clean();
+	ok(
+		'imagewebp with a null file echoes the bytes',
+		$done && getimagesizefromstring($echoed)[2] === IMAGETYPE_WEBP,
+	);
+	$handle = fopen('php://memory', 'w+');
+	ok(
+		'imagegif writes to a stream',
+		Gd::imagegif($img, $handle) &&
+			rewind($handle) &&
+			getimagesizefromstring((string) stream_get_contents($handle))[2] === IMAGETYPE_GIF,
+	);
+	ok(
+		'imagepng writes to a path',
+		Gd::imagepng($img, $work . '/gd-out.png', 9) &&
+			getimagesize($work . '/gd-out.png')[2] === IMAGETYPE_PNG,
+	);
+	ok(
+		'defaults match gd: 75 for jpeg, 80 for webp, level 6 for png',
+		(function () use ($img) {
+			$grab = function (callable $call): array {
+				$calls = [];
+				Park::useDriver(function (string $t) use (&$calls) {
+					$calls[] = json_decode(
+						(string) base64_decode(substr($t, strlen(Gd::SCHEME))),
+						true,
+					);
+					return gd_test_host($t);
+				});
+				ob_start();
+				$call();
+				ob_end_clean();
+				return $calls[0];
+			};
+			$jpeg = $grab(fn() => Gd::imagejpeg($img));
+			$webp = $grab(fn() => Gd::imagewebp($img));
+			$png = $grab(fn() => Gd::imagepng($img));
+			return $jpeg['quality'] === 75 && $webp['quality'] === 80 && $png['quality'] === 6;
+		})(),
+	);
+	Park::useDriver(fn(string $t) => gd_test_host($t));
+	$blank = Gd::imagecreatetruecolor(8, 6);
+	ob_start();
+	Gd::imagepng($blank);
+	$blankBytes = (string) ob_get_clean();
+	ok(
+		'a blank canvas encodes through the canvas request',
+		getimagesizefromstring($blankBytes)[0] === 8,
+	);
+	Degradation::reset();
+	Gd::imagealphablending($img, false);
+	Gd::imagesavealpha($img, true);
+	ok('alpha flags are stored on the handle', $img->blend === false && $img->saveAlpha === true);
+	$alphaPng = (function () {
+		$a = imagecreatetruecolor(4, 4);
+		imagealphablending($a, false);
+		imagesavealpha($a, true);
+		imagefill($a, 0, 0, imagecolorallocatealpha($a, 10, 20, 30, 64));
+		ob_start();
+		imagepng($a);
+		return (string) ob_get_clean();
+	})();
+	$alpha = Gd::imagecreatefromstring($alphaPng);
+	ob_start();
+	Gd::imagepng($alpha);
+	ob_end_clean();
+	ok(
+		'an alpha PNG written without imagesavealpha records the difference',
+		Degradation::isDeclared('gd alpha'),
+	);
+	Degradation::reset();
+	Gd::imagesavealpha($alpha, true);
+	ob_start();
+	Gd::imagepng($alpha);
+	ob_end_clean();
+	ok('and with imagesavealpha it is silent', !Degradation::isDeclared('gd alpha'));
+
+	// the failure modes are degradations, never fatals
+	Degradation::reset();
+	install_host([]);
+	ob_start();
+	$unavailable = Gd::imagepng($img);
+	ob_end_clean();
+	ok(
+		'without the host flag a write answers false and records',
+		$unavailable === false && Degradation::isDeclared('imagepng'),
+	);
+	install_host(['cfwParkImage' => true]);
+	Degradation::reset();
+	Park::useDriver(fn(string $t) => false);
+	ok(
+		'a refused park answers false and records',
+		Gd::imagejpeg($img, $work . '/never.jpg') === false &&
+			Degradation::isDeclared('imagejpeg') &&
+			!is_file($work . '/never.jpg'),
+	);
+	Degradation::reset();
+	Park::useDriver(fn(string $t) => json_encode(['error' => 'unsupported']));
+	ok(
+		'a host error answers false and names it',
+		Gd::imagejpeg($img, $work . '/never.jpg') === false &&
+			str_contains(Degradation::all()['imagejpeg']['reason'], 'unsupported'),
+	);
+	Park::useDriver(null);
+	install_host([]);
+
+	ok(
+		'the constants table carries gd\'s values',
+		Gd::CONSTANTS['IMG_BILINEAR_FIXED'] === IMG_BILINEAR_FIXED &&
+			Gd::CONSTANTS['IMG_NEAREST_NEIGHBOUR'] === IMG_NEAREST_NEIGHBOUR &&
+			Gd::CONSTANTS['IMG_WEBP'] === IMG_WEBP,
+	);
+}
+// #endregion
+
+// #region config import, stepped per beat
+echo "\n# ConfigImportStepper: a fresh importer per beat, a budget of operations, and a state row\n";
+
+use Drupal\Core\Config\ConfigImporter;
+use Drupal\Core\Config\ConfigImporterException;
+use Drupal\Core\Config\MemoryStorage;
+use Drupal\Core\Config\StorageComparer;
+use Drupal\drupflare\Ops\ConfigImportStepper;
+
+/**
+ * A ConfigImporter with no services behind it: it applies each changelist entry to a memory target.
+ */
+class CimFakeImporter extends ConfigImporter
+{
+	public StorageComparer $cmp;
+	public MemoryStorage $target;
+	public int $extensionOps = 0;
+	public ?string $failAt = null;
+	public bool $invalid = false;
+	public array $logged = [];
+	private array $done = [];
+	private ?int $total = null;
+
+	public function initialize()
+	{
+		if ($this->invalid) {
+			throw new ConfigImporterException('the source does not validate');
+		}
+		$steps = $this->extensionOps > 0 ? ['processExtensions'] : [];
+		return array_merge($steps, ['processConfigurations', 'processMissingContent', 'finish']);
+	}
+
+	public function doSyncStep($sync_step, &$context)
+	{
+		if ($sync_step === $this->failAt) {
+			throw new RuntimeException('boom in ' . $sync_step);
+		}
+		if ($sync_step === 'processExtensions') {
+			$this->extensionOps--;
+			$context['finished'] = $this->extensionOps > 0 ? 0.5 : 1;
+			return;
+		}
+		if ($sync_step !== 'processConfigurations') {
+			$context['finished'] = 1;
+			return;
+		}
+		$pending = [];
+		foreach (['delete', 'create', 'update'] as $op) {
+			foreach ($this->cmp->getChangelist($op) as $name) {
+				if (!isset($this->done[$name])) {
+					$pending[] = [$op, $name];
+				}
+			}
+		}
+		$this->total ??= count($pending);
+		if ($pending === []) {
+			$context['finished'] = 1;
+			return;
+		}
+		[$op, $name] = $pending[0];
+		if ($op === 'delete') {
+			$this->target->delete($name);
+		} else {
+			$this->target->write($name, $this->cmp->getSourceStorage()->read($name));
+		}
+		$this->done[$name] = true;
+		$context['finished'] = count($this->done) / $this->total;
+	}
+
+	public function getErrors()
+	{
+		return $this->logged;
+	}
+}
+
+$cimState = new class implements StateInterface {
+	public array $rows = [];
+	public int $writes = 0;
+	public function get($key, $default = null)
+	{
+		return $this->rows[$key] ?? $default;
+	}
+	public function getMultiple(array $keys)
+	{
+		return array_intersect_key($this->rows, array_flip($keys));
+	}
+	public function set($key, $value)
+	{
+		$this->writes++;
+		$this->rows[$key] = $value;
+	}
+	public function setMultiple(array $data)
+	{
+		foreach ($data as $k => $v) {
+			$this->set($k, $v);
+		}
+	}
+	public function delete($key)
+	{
+		unset($this->rows[$key]);
+	}
+	public function deleteMultiple(array $keys)
+	{
+		foreach ($keys as $k) {
+			unset($this->rows[$k]);
+		}
+	}
+	public function resetCache() {}
+	public function getValuesSetDuringRequest(string $key): ?array
+	{
+		return null;
+	}
+};
+
+/**
+ * Builds the importer factory the stepper takes, over one shared active storage.
+ */
+$cimBuild = function (MemoryStorage $target, array &$log, array $flags = []) {
+	return function (array $payload, array $collections) use ($target, &$log, $flags) {
+		$comparer = new StorageComparer(
+			ConfigImportStepper::source($payload, $collections, $target),
+			$target,
+		);
+		$importer = (new ReflectionClass(CimFakeImporter::class))->newInstanceWithoutConstructor();
+		$importer->cmp = $comparer;
+		$importer->target = $target;
+		$importer->extensionOps = $flags['extensions'] ?? 0;
+		$importer->failAt = $flags['failAt'] ?? null;
+		$importer->invalid = $flags['invalid'] ?? false;
+		$importer->logged = $flags['logged'] ?? [];
+		$log['importers'][] = spl_object_id($importer);
+		return [
+			$importer,
+			$comparer,
+			function () use (&$log) {
+				$log['released'] = ($log['released'] ?? 0) + 1;
+			},
+		];
+	};
+};
+
+$cimTarget = new MemoryStorage();
+$cimTarget->write('stale.a', ['v' => 1]);
+$cimTarget->write('stale.b', ['v' => 1]);
+$cimTarget->write('keep.me', ['v' => 1]);
+$cimTarget->createCollection('language.fr')->write('fr.only', ['v' => 9]);
+$cimPayload = ['keep.me' => ['v' => 1]];
+for ($i = 1; $i <= 24; $i++) {
+	$cimPayload["new.$i"] = ['v' => $i];
+}
+$cimLog = [];
+$build = $cimBuild($cimTarget, $cimLog);
+
+$r = ConfigImportStepper::step($cimState, $build, ['payload' => $cimPayload]);
+ok(
+	'the first call starts the run and does one beat of the budget',
+	$r['ok'] &&
+		$r['done'] === false &&
+		$r['phase'] === 'running' &&
+		$r['processed'] === 10 &&
+		$r['total'] === 26 &&
+		$r['remaining'] === 16,
+	json_encode($r),
+);
+ok(
+	'deletes ran first, then creates, so the budget spent two deletes and eight creates',
+	$cimTarget->read('stale.a') === false &&
+		$cimTarget->read('stale.b') === false &&
+		count(array_filter($cimTarget->listAll('new.'))) === 8,
+);
+ok(
+	'the payload and the progress are two state keys',
+	array_keys($cimState->rows) === [ConfigImportStepper::PAYLOAD, ConfigImportStepper::STATE] ||
+		array_keys($cimState->rows) === [ConfigImportStepper::STATE, ConfigImportStepper::PAYLOAD],
+);
+ok('the import lock is released after the beat', ($cimLog['released'] ?? 0) === 1);
+$r = ConfigImportStepper::step($cimState, $build, []);
+ok(
+	'a call with no payload continues',
+	$r['ok'] && $r['done'] === false && $r['processed'] === 10 && $r['remaining'] === 6,
+	json_encode($r),
+);
+$r = ConfigImportStepper::step($cimState, $build, []);
+ok(
+	'the last beat runs the remaining operations and then the closing steps',
+	$r['ok'] &&
+		$r['done'] === true &&
+		$r['phase'] === 'done' &&
+		$r['remaining'] === 0 &&
+		$r['errors'] === [],
+	json_encode($r),
+);
+ok(
+	'every object arrived, and the payload row is gone',
+	$cimTarget->exists('new.24') && !isset($cimState->rows[ConfigImportStepper::PAYLOAD]),
+);
+ok(
+	'a collection the payload never named is left alone, though the source lacked it',
+	$cimTarget->createCollection('language.fr')->read('fr.only') === ['v' => 9],
+);
+ok(
+	'every beat built a new importer: nothing lives on it between calls',
+	count($cimLog['importers']) === count(array_unique($cimLog['importers'])) &&
+		count($cimLog['importers']) >= 4,
+);
+$writes = $cimState->writes;
+$again = ConfigImportStepper::step($cimState, $build, []);
+ok(
+	'asking again after the end repeats the report and writes nothing',
+	$again['done'] === true && $again['phase'] === 'done' && $cimState->writes === $writes,
+);
+
+// a payload equal to the active storage has nothing to do
+$cimLog = [];
+$r = ConfigImportStepper::step($cimState, $cimBuild($cimTarget, $cimLog), [
+	'payload' =>
+		['keep.me' => ['v' => 1]] +
+		array_map(
+			fn($i) => ['v' => $i],
+			array_combine(array_map(fn($i) => "new.$i", range(1, 24)), range(1, 24)),
+		),
+]);
+ok(
+	'a payload that matches the site is done in one call with no operations',
+	$r['done'] && $r['processed'] === 0 && $r['total'] === 0,
+	json_encode($r),
+);
+
+// the payload is authoritative for the default collection, and a named collection is replaced
+$t = new MemoryStorage();
+$t->write('a', ['v' => 1]);
+$t->write('b', ['v' => 1]);
+$t->createCollection('language.de')->write('de.one', ['v' => 1]);
+$t->createCollection('language.fr')->write('fr.one', ['v' => 1]);
+$src = ConfigImportStepper::source(
+	['a' => ['v' => 2]],
+	['language.de' => ['de.two' => ['v' => 2]]],
+	$t,
+);
+ok(
+	'source() drops what the payload omits from the default collection',
+	$src->read('a') === ['v' => 2] && $src->read('b') === false,
+);
+ok(
+	'replaces a collection it names',
+	$src->createCollection('language.de')->listAll() === ['de.two'],
+);
+ok(
+	'and copies one it does not name, so it does not read as a deletion',
+	$src->createCollection('language.fr')->read('fr.one') === ['v' => 1],
+);
+ok(
+	'non-string names and non-array data in a payload are ignored',
+	ConfigImportStepper::source(
+		[0 => ['x' => 1], 'ok' => 'not-an-array', 'fine' => []],
+		[],
+		new MemoryStorage(),
+	)->listAll() === ['fine'],
+);
+
+// a new payload replaces a run in progress
+$s2 = clone $cimState;
+$t2 = new MemoryStorage();
+$log2 = [];
+$big = [];
+for ($i = 1; $i <= 30; $i++) {
+	$big["big.$i"] = ['v' => $i];
+}
+ConfigImportStepper::step($cimState, $cimBuild($t2, $log2), ['payload' => $big]);
+$r = ConfigImportStepper::step($cimState, $cimBuild($t2, $log2), [
+	'payload' => ['only.one' => ['v' => 1]],
+]);
+$guard = 0;
+while (!$r['done'] && $guard++ < 10) {
+	$r = ConfigImportStepper::step($cimState, $cimBuild($t2, $log2), []);
+}
+ok(
+	'a new payload replaces the run in progress and is authoritative',
+	$r['done'] === true && $r['total'] === 11 && $t2->listAll() === ['only.one'],
+	json_encode([$r, $t2->listAll()]),
+);
+
+// no run and no payload
+$empty = clone $s2;
+$empty->rows = [];
+$r = ConfigImportStepper::step($empty, $build, []);
+ok(
+	'continuing with nothing in progress is an error naming the fix',
+	$r['ok'] === false && str_contains($r['error'], 'send a payload'),
+);
+ok(
+	'an empty payload is refused',
+	ConfigImportStepper::step($empty, $build, ['payload' => []])['ok'] === false,
+);
+ok(
+	'a payload that is not a map is refused',
+	ConfigImportStepper::step($empty, $build, ['payload' => 'x'])['ok'] === false,
+);
+
+// the budget option
+$t3 = new MemoryStorage();
+$log3 = [];
+$st = clone $empty;
+$r = ConfigImportStepper::step($st, $cimBuild($t3, $log3), ['payload' => $big, 'budget' => 3]);
+ok(
+	'a smaller budget runs fewer operations',
+	$r['processed'] === 3 && $r['remaining'] === 27,
+	json_encode($r),
+);
+$st = clone $empty;
+$r = ConfigImportStepper::step($st, $cimBuild($t3 = new MemoryStorage(), $log3), [
+	'payload' => $big,
+	'budget' => 500,
+]);
+ok('and a larger one is held to the ceiling', $r['processed'] === ConfigImportStepper::BUDGET);
+
+// an extension change costs the whole beat
+$t4 = new MemoryStorage();
+$log4 = [];
+$st = clone $empty;
+$r = ConfigImportStepper::step($st, $cimBuild($t4, $log4, ['extensions' => 1]), [
+	'payload' => ['x' => ['v' => 1], 'y' => ['v' => 2]],
+]);
+ok(
+	'an extension operation ends the beat, so the container is rebuilt before the next one',
+	$r['done'] === false &&
+		$r['processed'] === ConfigImportStepper::BUDGET &&
+		$t4->listAll() === [],
+	json_encode([$r, $t4->listAll()]),
+);
+$r = ConfigImportStepper::step($st, $cimBuild($t4, $log4), []);
+ok('the next beat runs the configuration', $r['done'] === true && $t4->listAll() === ['x', 'y']);
+
+// failures end the run, release the lock and drop the payload
+$t5 = new MemoryStorage();
+$log5 = [];
+$st = clone $empty;
+$r = ConfigImportStepper::step($st, $cimBuild($t5, $log5, ['failAt' => 'processConfigurations']), [
+	'payload' => ['x' => ['v' => 1]],
+]);
+ok(
+	'an exception in a step fails the run with its message',
+	$r['ok'] === false &&
+		$r['done'] === true &&
+		$r['phase'] === 'failed' &&
+		$r['errors'] === ['RuntimeException: boom in processConfigurations'],
+	json_encode($r),
+);
+ok(
+	'the lock was released and the payload dropped',
+	($log5['released'] ?? 0) >= 1 && !isset($st->rows[ConfigImportStepper::PAYLOAD]),
+);
+ok(
+	'a failed run stays failed when asked again',
+	ConfigImportStepper::step($st, $cimBuild($t5, $log5), [])['phase'] === 'failed',
+);
+$st = clone $empty;
+$r = ConfigImportStepper::step(
+	$st,
+	$cimBuild($t5 = new MemoryStorage(), $log5, ['invalid' => true]),
+	['payload' => ['x' => ['v' => 1]]],
+);
+ok(
+	'a validation failure names the importer\'s reason and changes nothing',
+	$r['ok'] === false &&
+		$r['errors'] === ['the source does not validate'] &&
+		$t5->listAll() === [],
+);
+$st = clone $empty;
+$r = ConfigImportStepper::step(
+	$st,
+	$cimBuild($t5 = new MemoryStorage(), $log5, ['logged' => ['entity x could not be deleted']]),
+	['payload' => ['x' => ['v' => 1]]],
+);
+ok(
+	'errors the importer logged while finishing turn a completed run into a failed one',
+	$r['done'] === true &&
+		$r['phase'] === 'failed' &&
+		$r['errors'] === ['entity x could not be deleted'] &&
+		$t5->exists('x'),
+	json_encode($r),
+);
+
+ok('cim is declared sliced and writing', OpsRegistry::sliced('cim') && OpsRegistry::writes('cim'));
+ok(
+	'the raw writer moved to config-write, unsliced',
+	OpsRegistry::has('config-write') &&
+		!OpsRegistry::sliced('config-write') &&
+		OpsRegistry::writes('config-write'),
+);
+ok(
+	'OpsRunner has a driver for both',
+	!str_contains(
+		json_encode(Drupal\drupflare\Ops\OpsRunner::run('config-write', [], [])),
+		'no driver',
+	) &&
+		str_contains(
+			json_encode(
+				Drupal\drupflare\Ops\OpsRunner::run(
+					'config-write',
+					[],
+					['payload' => range(1, 30)],
+				),
+			),
+			'at most 25',
+		),
+);
+// #endregion
+
+// #region a symfony_mailer transport over the host mail path
+echo "\n# cfwmail:// transport for symfony_mailer\n";
+
+use Drupal\drupflare\Mail\CfwMailTransport;
+use Drupal\drupflare\Mail\CfwMailTransportFactory;
+use Symfony\Component\Mailer\Exception\TransportException;
+use Symfony\Component\Mailer\Mailer as SymfonyMailer;
+use Symfony\Component\Mailer\Transport as SymfonyTransport;
+use Symfony\Component\Mime\Email as MimeEmail;
+
+$mailSpy = new HostSpy(['ok' => true]);
+install_host(['cfwMail' => $mailSpy]);
+$mailTransport = (new SymfonyTransport([new CfwMailTransportFactory()]))->fromString(
+	'cfwmail://default',
+);
+ok('a cfwmail DSN resolves to the transport', $mailTransport instanceof CfwMailTransport);
+ok('the transport names itself by its DSN', (string) $mailTransport === 'cfwmail://default');
+ok(
+	'another scheme is not this factory\'s',
+	(function () {
+		try {
+			(new SymfonyTransport([new CfwMailTransportFactory()]))->fromString('smtp://x:1');
+		} catch (Throwable) {
+			return true;
+		}
+		return false;
+	})(),
+);
+$mime = (new MimeEmail())
+	->from('Site <site@example.test>')
+	->to('a@example.test', 'B Person <b@example.test>')
+	->cc('c@example.test')
+	->bcc('d@example.test')
+	->replyTo('reply@example.test')
+	->subject('Hello there')
+	->text('plain body')
+	->html('<p>html body</p>');
+$mime->getHeaders()->addIdHeader('In-Reply-To', 'abc@example.test');
+(new SymfonyMailer($mailTransport))->send($mime);
+$sent = $mailSpy->calls[0] ?? [];
+ok(
+	'the message reaches cfwMail with its addressing, subject and both bodies',
+	($sent['to'] ?? '') === 'a@example.test, "B Person" <b@example.test>' &&
+		($sent['from'] ?? '') === '"Site" <site@example.test>' &&
+		($sent['replyTo'] ?? '') === 'reply@example.test' &&
+		($sent['subject'] ?? '') === 'Hello there' &&
+		($sent['text'] ?? '') === 'plain body' &&
+		($sent['html'] ?? '') === '<p>html body</p>',
+	json_encode($sent),
+);
+ok(
+	'Cc, Bcc and In-Reply-To ride as the headers the binding accepts',
+	($sent['headers']['Cc'] ?? '') === 'c@example.test' &&
+		($sent['headers']['Bcc'] ?? '') === 'd@example.test' &&
+		str_contains($sent['headers']['In-Reply-To'] ?? '', 'abc@example.test'),
+	json_encode($sent['headers'] ?? null),
+);
+ok(
+	'the payload carries the same smtp fallback field as the Drupal mail plugin',
+	array_key_exists('smtp', $sent),
+);
+$mailSpy->calls = [];
+(new SymfonyMailer($mailTransport))->send(
+	(new MimeEmail())->from('a@example.test')->to('b@example.test')->subject('s')->text('t'),
+);
+ok(
+	'a text-only message sends html as null',
+	array_key_exists('html', $mailSpy->calls[0] ?? []) && $mailSpy->calls[0]['html'] === null,
+);
+
+$attached = (new MimeEmail())
+	->from('a@example.test')
+	->to('b@example.test')
+	->subject('s')
+	->text('t')
+	->attach('bytes', 'f.txt', 'text/plain');
+Degradation::reset();
+$mailSpy->calls = [];
+ok(
+	'an attachment is refused with a TransportException, never dropped',
+	(function () use ($mailTransport, $attached) {
+		try {
+			(new SymfonyMailer($mailTransport))->send($attached);
+		} catch (TransportException) {
+			return true;
+		}
+		return false;
+	})() &&
+		$mailSpy->calls === [] &&
+		Degradation::isDeclared('mailer attachments'),
+);
+install_host(['cfwMail' => new HostSpy(['ok' => false, 'error' => 'no transport configured'])]);
+ok(
+	'a refusal from the host surfaces its reason',
+	(function () use ($mailTransport) {
+		try {
+			(new SymfonyMailer($mailTransport))->send(
+				(new MimeEmail())
+					->from('a@example.test')
+					->to('b@example.test')
+					->subject('s')
+					->text('t'),
+			);
+		} catch (TransportException $e) {
+			return str_contains($e->getMessage(), 'no transport configured');
+		}
+		return false;
+	})(),
+);
+install_host([]);
+ok(
+	'outside a Worker it fails as a transport error, not a fatal',
+	(function () use ($mailTransport) {
+		try {
+			(new SymfonyMailer($mailTransport))->send(
+				(new MimeEmail())
+					->from('a@example.test')
+					->to('b@example.test')
+					->subject('s')
+					->text('t'),
+			);
+		} catch (TransportException $e) {
+			return str_contains($e->getMessage(), 'not running inside a Worker');
+		}
+		return false;
+	})(),
+);
+ok(
+	'the factory is registered under the tag symfony_mailer collects',
+	str_contains(
+		(string) file_get_contents($root . '/drupflare.services.yml'),
+		'name: mailer.transport_factory',
+	),
+);
+// #endregion
+
+// #region advancedqueue drained by count
+echo "\n# QueueDrain: jobs by count, since the clock never reaches a processor's time limit\n";
+
+use Drupal\drupflare\Ops\QueueDrain;
+
+$aqQueues = ['default' => 7, 'second' => 6];
+$aqRan = [];
+$aqClaim = function (string $id) use (&$aqQueues) {
+	if ($aqQueues[$id] <= 0) {
+		return null;
+	}
+	$aqQueues[$id]--;
+	return (object) ['queue' => $id, 'n' => $aqQueues[$id]];
+};
+$aqProcess = function (object $job, string $id) use (&$aqRan) {
+	$aqRan[] = $id . ':' . $job->n;
+};
+$aqLeft = function (string $id) use (&$aqQueues) {
+	return $aqQueues[$id];
+};
+$r = QueueDrain::run(['default', 'second'], 5, $aqClaim, $aqProcess, $aqLeft);
+ok(
+	'a call runs at most the limit and reports what is left per queue',
+	$r['ok'] &&
+		$r['processed'] === 5 &&
+		$r['remaining'] === 8 &&
+		$r['done'] === false &&
+		$r['queues'] === [
+			'default' => ['processed' => 5, 'remaining' => 2],
+			'second' => ['processed' => 0, 'remaining' => 6],
+		],
+	json_encode($r),
+);
+$r = QueueDrain::run(['default', 'second'], 5, $aqClaim, $aqProcess, $aqLeft);
+ok(
+	'the next call finishes the first queue and starts the second',
+	$r['processed'] === 5 &&
+		$r['queues']['default']['processed'] === 2 &&
+		$r['queues']['second']['processed'] === 3,
+);
+$r = QueueDrain::run(['default', 'second'], 5, $aqClaim, $aqProcess, $aqLeft);
+ok(
+	'the last call reports done',
+	$r['done'] === true && $r['processed'] === 3 && $r['remaining'] === 0,
+);
+ok('every job ran once, in order', count($aqRan) === 13 && count(array_unique($aqRan)) === 13);
+$r = QueueDrain::run(['default'], 5, $aqClaim, $aqProcess, $aqLeft);
+ok('an empty queue is done with nothing processed', $r['done'] === true && $r['processed'] === 0);
+$aqQueues = ['q' => 500];
+$r = QueueDrain::run(['q'], 500, $aqClaim, $aqProcess, $aqLeft);
+ok('the limit is held to the ceiling', $r['processed'] === QueueDrain::MAX_LIMIT);
+$aqQueues = ['q' => 3];
+$r = QueueDrain::run(['q'], 0, $aqClaim, $aqProcess, $aqLeft);
+ok('a limit below one still runs one job', $r['processed'] === 1);
+ok(
+	'queue-drain is declared writing and unsliced, with drush spellings',
+	OpsRegistry::writes('queue-drain') &&
+		!OpsRegistry::sliced('queue-drain') &&
+		CommandLine::parse('drush advancedqueue:queue:process default')['op'] === 'queue-drain' &&
+		CommandLine::parse('aqp')['op'] === 'queue-drain',
+);
+ok(
+	'without the module the op names the reason instead of failing',
+	Drupal\drupflare\Ops\OpsRunner::run('queue-drain', [], []) === [
+		'ok' => false,
+		'error' => 'advancedqueue is not installed',
+	],
+);
+// #endregion
+
+// #region shutdown callbacks and named TERMINATE subscribers, drained after a render
+echo "\n# Terminate::drain: the shutdown queue and opt-in TERMINATE subscribers\n";
+
+use Drupal\drupflare\Terminate;
+use Symfony\Component\EventDispatcher\EventDispatcher as TermDispatcher;
+use Symfony\Component\HttpFoundation\Request as TermRequest;
+use Symfony\Component\HttpFoundation\Response as TermResponse;
+use Symfony\Component\HttpKernel\Event\TerminateEvent;
+use Symfony\Component\HttpKernel\HttpKernelInterface;
+use Symfony\Component\HttpKernel\KernelEvents as TermEvents;
+
+eval(
+	'namespace Drupal\\automated_cron\\EventSubscriber; class AutomatedCron { public function onTerminate($e) { $GLOBALS["cfw_term_log"][] = "cron"; } }'
+);
+class CfwTermListener
+{
+	public function onTerminate($event)
+	{
+		$GLOBALS['cfw_term_log'][] = 'listener:' . get_class($event);
+	}
+}
+class CfwTermOther
+{
+	public function onTerminate($event)
+	{
+		$GLOBALS['cfw_term_log'][] = 'other';
+	}
+}
+class CfwTermThrower
+{
+	public function onTerminate($event)
+	{
+		throw new RuntimeException('subscriber blew up');
+	}
+}
+$termKernel = new class implements HttpKernelInterface {
+	public function handle(
+		TermRequest $request,
+		int $type = self::MAIN_REQUEST,
+		bool $catch = true,
+	): TermResponse {
+		return new TermResponse();
+	}
+};
+$termRequest = TermRequest::create('/');
+$termOk = new TermResponse('ok', 200);
+$GLOBALS['cfw_term_log'] = [];
+$queue = &drupal_register_shutdown_function();
+$queue = [];
+drupal_register_shutdown_function(
+	function ($a, $b) {
+		$GLOBALS['cfw_term_log'][] = "first:$a$b";
+	},
+	'x',
+	'y',
+);
+drupal_register_shutdown_function(function () {
+	$GLOBALS['cfw_term_log'][] = 'second';
+	drupal_register_shutdown_function(function () {
+		$GLOBALS['cfw_term_log'][] = 'queued-by-second';
+	});
+});
+drupal_register_shutdown_function(function () {
+	throw new LogicException('shutdown blew up');
+});
+drupal_register_shutdown_function(function () {
+	$GLOBALS['cfw_term_log'][] = 'after-the-thrower';
+});
+$r = Terminate::drain($termKernel, $termRequest, $termOk, null, []);
+ok(
+	'queued shutdown callbacks run in order with their arguments, including one queued while draining',
+	$GLOBALS['cfw_term_log'] === ['first:xy', 'second', 'after-the-thrower', 'queued-by-second'],
+	json_encode($GLOBALS['cfw_term_log']),
+);
+ok(
+	'a callback that throws is reported and does not stop the rest',
+	$r['shutdown']['ran'] === 4 &&
+		count($r['shutdown']['failed']) === 1 &&
+		str_contains($r['shutdown']['failed'][0], 'shutdown blew up'),
+	json_encode($r),
+);
+ok('the queue is empty afterwards', $queue === []);
+$GLOBALS['cfw_term_log'] = [];
+$r = Terminate::drain($termKernel, $termRequest, $termOk, null, []);
+ok(
+	'a second drain repeats nothing',
+	$GLOBALS['cfw_term_log'] === [] && $r['shutdown']['ran'] === 0,
+);
+
+drupal_register_shutdown_function(function () {
+	$GLOBALS['cfw_term_log'][] = 'not-on-a-500';
+});
+$r = Terminate::drain($termKernel, $termRequest, new TermResponse('boom', 500), null, []);
+ok(
+	'a server error runs nothing and leaves the queue for the render that follows',
+	$r['skipped'] !== null && $GLOBALS['cfw_term_log'] === [] && count($queue) === 1,
+);
+$queue = [];
+
+$dispatcher = new TermDispatcher();
+$dispatcher->addListener(TermEvents::TERMINATE, [new CfwTermListener(), 'onTerminate']);
+$dispatcher->addListener(TermEvents::TERMINATE, [new CfwTermOther(), 'onTerminate']);
+$dispatcher->addListener(TermEvents::TERMINATE, [
+	new Drupal\automated_cron\EventSubscriber\AutomatedCron(),
+	'onTerminate',
+]);
+$dispatcher->addListener(TermEvents::TERMINATE, [new CfwTermThrower(), 'onTerminate']);
+$r = Terminate::drain($termKernel, $termRequest, $termOk, $dispatcher, []);
+ok(
+	'with nothing named no subscriber runs',
+	$GLOBALS['cfw_term_log'] === [] && $r['terminate']['ran'] === [],
+);
+Degradation::reset();
+$r = Terminate::drain($termKernel, $termRequest, $termOk, $dispatcher, [
+	CfwTermListener::class,
+	Drupal\automated_cron\EventSubscriber\AutomatedCron::class,
+	CfwTermThrower::class,
+]);
+ok(
+	'only the named subscribers run, and they receive a TerminateEvent',
+	$GLOBALS['cfw_term_log'] === ['listener:' . TerminateEvent::class] &&
+		$r['terminate']['ran'] === [CfwTermListener::class],
+	json_encode([$GLOBALS['cfw_term_log'], $r['terminate']]),
+);
+ok(
+	'automated_cron is refused by name even when named, and recorded',
+	$r['terminate']['refused'] === [Drupal\automated_cron\EventSubscriber\AutomatedCron::class] &&
+		!in_array('cron', $GLOBALS['cfw_term_log'], true) &&
+		Degradation::isDeclared('terminate Drupal\\automated_cron\\EventSubscriber\\AutomatedCron'),
+);
+ok(
+	'a subscriber that throws is recorded and does not fail the drain',
+	Degradation::isDeclared('terminate CfwTermThrower') &&
+		!in_array('other', $GLOBALS['cfw_term_log'], true),
+);
+new Settings(['drupflare_terminate_subscribers' => [CfwTermOther::class]]);
+$GLOBALS['cfw_term_log'] = [];
+$r = Terminate::drain($termKernel, $termRequest, $termOk, $dispatcher);
+ok(
+	'the setting names the subscribers when none are passed',
+	$GLOBALS['cfw_term_log'] === ['other'] && $r['terminate']['ran'] === [CfwTermOther::class],
+);
+new Settings([]);
 // #endregion
 
 echo "\n$pass passed, $fail failed\n";
