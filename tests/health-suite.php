@@ -133,6 +133,10 @@ use Drupal\Core\Cache\CacheTagsChecksumInterface;
 use Drupal\Core\Cache\DatabaseBackend;
 use Drupal\Core\Database\Connection;
 use Drupal\Core\Site\Settings;
+use Drupal\drupflare\Shim\KeyValueRedisStore;
+use Drupal\drupflare\Shim\Redis as StandinRedis;
+use Drupal\drupflare\Shim\RedisException;
+use Drupal\drupflare\Shim\RedisStoreInterface;
 use Drupal\Component\Datetime\Time;
 use Drupal\Component\Serialization\PhpSerialize;
 use Drupal\Core\Cache\Cache;
@@ -7491,6 +7495,564 @@ ok(
 	$GLOBALS['cfw_term_log'] === ['other'] && $r['terminate']['ran'] === [CfwTermOther::class],
 );
 new Settings([]);
+// #endregion
+
+// #region the Redis stand-in
+
+/**
+ * An in-memory store standing in for the database table.
+ */
+final class RedisMemoryStore implements RedisStoreInterface
+{
+	/**
+	 * The rows by database and key.
+	 *
+	 * @var array<int, array<string, array{v: string, expire: int|null}>>
+	 */
+	public array $rows = [];
+
+	public function read(int $db, string $key, int $now): ?array
+	{
+		$row = $this->rows[$db][$key] ?? null;
+		return $row === null || ($row['expire'] !== null && $row['expire'] <= $now) ? null : $row;
+	}
+
+	public function write(int $db, string $key, string $value, ?int $expire): void
+	{
+		$this->rows[$db][$key] = ['v' => $value, 'expire' => $expire];
+	}
+
+	public function delete(int $db, string $key): bool
+	{
+		$had = isset($this->rows[$db][$key]);
+		unset($this->rows[$db][$key]);
+		return $had;
+	}
+
+	public function all(int $db, int $now): array
+	{
+		return array_filter(
+			$this->rows[$db] ?? [],
+			static fn($row) => $row['expire'] === null || $row['expire'] > $now,
+		);
+	}
+
+	public function purge(int $db, int $now): void
+	{
+		foreach ($this->rows[$db] ?? [] as $key => $row) {
+			if ($row['expire'] !== null && $row['expire'] <= $now) {
+				unset($this->rows[$db][$key]);
+			}
+		}
+	}
+}
+
+$redisNow = 1_800_000_000;
+$redisStore = new RedisMemoryStore();
+StandinRedis::configure($redisStore, static function () use (&$redisNow): int {
+	return $redisNow;
+});
+$redis = new StandinRedis();
+ok(
+	'connect, auth and select answer true without a socket',
+	$redis->connect('127.0.0.1', 6379) === true &&
+		$redis->auth('x') === true &&
+		$redis->select(0) === true &&
+		$redis->isConnected(),
+);
+ok(
+	'the options drupal/redis sets are accepted',
+	$redis->setOption(StandinRedis::OPT_SERIALIZER, StandinRedis::SERIALIZER_NONE) === true,
+);
+ok('a missing key reads false', $redis->get('nope') === false);
+ok(
+	'set then get round trips a string',
+	$redis->set('a', 'one') === true && $redis->get('a') === 'one',
+);
+ok(
+	'a scalar is stored as its string form',
+	$redis->set('n', 42) === true && $redis->get('n') === '42',
+);
+ok(
+	'ttl is -2 for a missing key and -1 for one with no expiry',
+	$redis->ttl('nope') === -2 && $redis->ttl('a') === -1,
+);
+ok(
+	'setex stores a value with a ttl',
+	$redis->setex('t', 100, 'v') === true &&
+		$redis->ttl('t') === 100 &&
+		$redis->pttl('t') === 100000,
+);
+ok(
+	'setex refuses a non-positive ttl and says why',
+	$redis->setex('bad', 0, 'v') === false &&
+		str_contains((string) $redis->getLastError(), 'invalid expire'),
+);
+$redisNow += 99;
+ok(
+	'a key is live one second before it expires',
+	$redis->get('t') === 'v' && $redis->ttl('t') === 1,
+);
+$redisNow += 1;
+ok(
+	'a key is gone at its expiry, for get, exists and ttl',
+	$redis->get('t') === false && $redis->exists('t') === 0 && $redis->ttl('t') === -2,
+);
+ok(
+	'an integer third argument to set is seconds to live',
+	$redis->set('i', 'x', 30) === true && $redis->ttl('i') === 30,
+);
+ok(
+	'set takes EX and PX in an option array',
+	$redis->set('e1', 'x', ['EX' => 10]) === true &&
+		$redis->ttl('e1') === 10 &&
+		$redis->set('p1', 'x', ['PX' => 5000]) === true &&
+		$redis->ttl('p1') === 5,
+);
+ok(
+	'NX refuses an existing key and XX a missing one',
+	$redis->set('a', 'two', ['NX']) === false &&
+		$redis->get('a') === 'one' &&
+		$redis->set('zz', 'v', ['XX']) === false &&
+		$redis->get('zz') === false,
+);
+ok(
+	'NX stores a missing key and XX replaces an existing one',
+	$redis->set('fresh', 'v', ['NX']) === true &&
+		$redis->set('a', 'two', ['XX']) === true &&
+		$redis->get('a') === 'two',
+);
+ok('setnx is NX', $redis->setnx('a', 'three') === false && $redis->setnx('nx2', 'v') === true);
+ok(
+	'GET returns the old value',
+	$redis->set('a', 'four', ['GET']) === 'two' && $redis->get('a') === 'four',
+);
+ok(
+	'KEEPTTL keeps the expiry of the key it replaces',
+	$redis->setex('k', 50, 'v') &&
+		$redis->set('k', 'w', ['KEEPTTL']) === true &&
+		$redis->ttl('k') === 50,
+);
+ok(
+	'getSet returns the old value and stores the new one',
+	$redis->getSet('a', 'five') === 'four' && $redis->get('a') === 'five',
+);
+ok(
+	'mset and mget carry several keys, false for a missing one',
+	$redis->mset(['m1' => 'a', 'm2' => 'b']) === true &&
+		$redis->mget(['m1', 'm2', 'm3']) === ['a', 'b', false],
+);
+ok(
+	'incr and decr count from zero and by an amount',
+	$redis->incr('c') === 1 &&
+		$redis->incrBy('c', 4) === 5 &&
+		$redis->decr('c') === 4 &&
+		$redis->decrBy('c', 10) === -6,
+);
+ok(
+	'incr on a non-integer value answers false and records the error',
+	$redis->set('s', 'abc') &&
+		$redis->incr('s') === false &&
+		str_contains((string) $redis->getLastError(), 'not an integer'),
+);
+ok(
+	'incr keeps the expiry',
+	$redis->setex('ce', 40, '1') && $redis->incr('ce') === 2 && $redis->ttl('ce') === 40,
+);
+ok(
+	'append and strlen work on the stored string',
+	$redis->append('ap', 'ab') === 2 &&
+		$redis->append('ap', 'cd') === 4 &&
+		$redis->strlen('ap') === 4 &&
+		$redis->get('ap') === 'abcd',
+);
+ok(
+	'del counts what was there, as a list, an array or one key',
+	$redis->del('m1', 'm2', 'm3') === 2 &&
+		$redis->mset(['d1' => 'x', 'd2' => 'y']) &&
+		$redis->del(['d1', 'd2']) === 2 &&
+		$redis->del('d1') === 0,
+);
+ok(
+	'del takes the spread form RedisHelper uses',
+	$redis->mset(['s1' => 'x', 's2' => 'y']) && $redis->del(...['s1', 's2']) === 2,
+);
+ok(
+	'exists counts the keys that are there',
+	$redis->exists('a') === 1 && $redis->exists('a', 'nope', 'c') === 2,
+);
+ok(
+	'expire sets a ttl on a live key and refuses a missing one',
+	$redis->expire('a', 20) === true &&
+		$redis->ttl('a') === 20 &&
+		$redis->expire('nope', 20) === false,
+);
+ok(
+	'persist removes the ttl',
+	$redis->persist('a') === true && $redis->ttl('a') === -1 && $redis->persist('a') === false,
+);
+ok(
+	'expireAt in the past deletes the key',
+	$redis->expireAt('a', $redisNow - 1) === true && $redis->exists('a') === 0,
+);
+ok(
+	'type is string or not found',
+	$redis->type('c') === StandinRedis::REDIS_STRING &&
+		$redis->type('nope') === StandinRedis::REDIS_NOT_FOUND,
+);
+$redis->flushDB();
+$redis->mset([
+	'cloud:points:1' => 'a',
+	'cloud:points:22' => 'b',
+	'cloud:badge' => 'c',
+	'user:1:public' => 'd',
+	'a.b' => 'e',
+	'axb' => 'f',
+]);
+ok(
+	'keys matches * and returns them sorted',
+	$redis->keys('cloud:*') === ['cloud:badge', 'cloud:points:1', 'cloud:points:22'],
+);
+ok('keys matches ? as one character', $redis->keys('cloud:points:?') === ['cloud:points:1']);
+ok(
+	'keys matches a character class and treats a dot as a dot',
+	$redis->keys('user:[0-9]:public') === ['user:1:public'] &&
+		$redis->keys('a.b') === ['a.b'] &&
+		$redis->keys('a\.b') === ['a.b'],
+);
+ok(
+	'keys skips an expired key',
+	$redis->setex('gone', 5, 'x') &&
+		($redisNow += 5) > 0 &&
+		!in_array('gone', $redis->keys('*'), true),
+);
+$iterator = null;
+$batch = $redis->scan($iterator, 'cloud:points:*', 1000);
+ok(
+	'scan returns every match in one batch and ends the iterator at the integer 0',
+	$batch === ['cloud:points:1', 'cloud:points:22'] && $iterator === 0,
+);
+ok(
+	'scan on a finished iterator answers false, so a do-while ends',
+	$redis->scan($iterator, 'cloud:points:*') === false,
+);
+$deleted = 0;
+$it = null;
+do {
+	$found = $redis->scan($it, 'cloud:*', 1000);
+	if ($found === false || empty($found)) {
+		continue;
+	}
+	$deleted += $redis->del(...$found);
+} while ($it !== 0);
+ok(
+	'the do-while glob delete RedisHelper runs removes its matches',
+	$deleted === 3 && $redis->keys('cloud:*') === [],
+);
+ok('dbSize counts live keys', $redis->dbSize() === 3);
+ok(
+	'select isolates databases',
+	$redis->select(1) &&
+		$redis->get('user:1:public') === false &&
+		$redis->set('only1', 'v') &&
+		$redis->select(0) &&
+		$redis->get('only1') === false,
+);
+$redis->setOption(StandinRedis::OPT_PREFIX, 'app:');
+ok(
+	'the prefix option is applied to a key and removed from keys()',
+	$redis->set('k', 'v') === true &&
+		$redis->get('k') === 'v' &&
+		$redisStore->read(0, 'app:k', $redisNow) !== null &&
+		$redis->keys('*') === ['k'],
+);
+$redis->setOption(StandinRedis::OPT_PREFIX, '');
+$redisThrown = null;
+try {
+	$redis->hGetAll('h');
+} catch (RedisException $e) {
+	$redisThrown = $e;
+}
+ok(
+	'a hash command throws RedisException by name instead of inventing data',
+	$redisThrown instanceof RedisException && str_contains($redisThrown->getMessage(), 'hGetAll'),
+);
+ok('and records the degradation', Degradation::isDeclared('redis'));
+ok('flushDB empties the database', $redis->flushDB() === true && $redis->dbSize() === 0);
+
+$redisPrune = new RedisMemoryStore();
+StandinRedis::configure($redisPrune, static function () use (&$redisNow): int {
+	return $redisNow;
+});
+$pruner = new StandinRedis();
+$pruner->setex('old', 10, 'x');
+$redisNow += 100;
+$pruner->set('next', 'y');
+ok(
+	'a write purges expired rows, so short-lived keys do not pile up',
+	!isset($redisPrune->rows[0]['old']) && isset($redisPrune->rows[0]['next']),
+);
+
+ok(
+	'a glob becomes an anchored regular expression',
+	preg_match(StandinRedis::globToRegex('a*c'), 'abbbc') === 1 &&
+		preg_match(StandinRedis::globToRegex('a*c'), 'abbbcd') === 0,
+);
+ok('an unclosed bracket is a literal', preg_match(StandinRedis::globToRegex('a[b'), 'a[b') === 1);
+
+$pdoRedis = new PDO('sqlite::memory:');
+$pdoRedis->exec(
+	'CREATE TABLE key_value_expire (collection TEXT NOT NULL, name TEXT NOT NULL, value BLOB, expire INTEGER NOT NULL, PRIMARY KEY (collection, name))',
+);
+final class RedisSqliteStatement
+{
+	public function __construct(private PDOStatement $statement) {}
+
+	/**
+	 * Every row, as objects.
+	 *
+	 * @return array<int, object>
+	 *   The rows.
+	 */
+	public function fetchAll(): array
+	{
+		return $this->statement->fetchAll(PDO::FETCH_OBJ);
+	}
+
+	public function rowCount(): int
+	{
+		return $this->statement->rowCount();
+	}
+}
+final class RedisSqliteDelete
+{
+	/**
+	 * The WHERE terms.
+	 *
+	 * @var array<int, string>
+	 */
+	private array $where = [];
+
+	/**
+	 * The bound arguments.
+	 *
+	 * @var array<string, mixed>
+	 */
+	private array $args = [];
+
+	public function __construct(private PDO $pdo, private string $table) {}
+
+	public function condition(string $field, mixed $value, string $operator = '='): self
+	{
+		$name = ':c' . count($this->args);
+		$this->where[] = "$field $operator $name";
+		$this->args[$name] = $value;
+		return $this;
+	}
+
+	public function execute(): int
+	{
+		$statement = $this->pdo->prepare(
+			"DELETE FROM {$this->table} WHERE " . implode(' AND ', $this->where),
+		);
+		$statement->execute($this->args);
+		return $statement->rowCount();
+	}
+}
+final class RedisSqliteInsert
+{
+	/**
+	 * The columns to insert.
+	 *
+	 * @var array<string, mixed>
+	 */
+	private array $fields = [];
+
+	public function __construct(private PDO $pdo, private string $table) {}
+
+	/**
+	 * Sets the columns to insert.
+	 *
+	 * @param array<string, mixed> $fields
+	 *   The values by column.
+	 *
+	 * @return self
+	 *   This query.
+	 */
+	public function fields(array $fields): self
+	{
+		$this->fields = $fields;
+		return $this;
+	}
+
+	public function execute(): int
+	{
+		$names = array_keys($this->fields);
+		$statement = $this->pdo->prepare(
+			"INSERT INTO {$this->table} (" .
+				implode(', ', $names) .
+				') VALUES (:' .
+				implode(', :', $names) .
+				')',
+		);
+		$statement->execute($this->fields);
+		return 1;
+	}
+}
+final class RedisSqliteDatabase
+{
+	public function __construct(private PDO $pdo) {}
+
+	public function delete(string $table): RedisSqliteDelete
+	{
+		return new RedisSqliteDelete($this->pdo, $table);
+	}
+
+	public function insert(string $table): RedisSqliteInsert
+	{
+		return new RedisSqliteInsert($this->pdo, $table);
+	}
+
+	/**
+	 * Runs a read with its arguments.
+	 *
+	 * @param string $sql
+	 *   The statement, with Drupal's braces.
+	 * @param array<string, mixed> $args
+	 *   The arguments.
+	 *
+	 * @return RedisSqliteStatement
+	 *   The rows.
+	 */
+	public function query(string $sql, array $args = []): RedisSqliteStatement
+	{
+		$statement = $this->pdo->prepare(str_replace(['{', '}'], '', $sql));
+		$statement->execute($args);
+		return new RedisSqliteStatement($statement);
+	}
+}
+$redisContainer = new ContainerBuilder();
+$redisContainer->set('database', new RedisSqliteDatabase($pdoRedis));
+Drupal::setContainer($redisContainer);
+$pdoRedis->exec('DROP TABLE key_value_expire');
+$created = 0;
+$lazy = new KeyValueRedisStore(static function () use ($pdoRedis, &$created): void {
+	$created++;
+	$pdoRedis->exec(
+		'CREATE TABLE key_value_expire (collection TEXT NOT NULL, name TEXT NOT NULL, value BLOB, expire INTEGER NOT NULL, PRIMARY KEY (collection, name))',
+	);
+});
+$lazy->write(0, 'first', 'v', null);
+ok(
+	'a missing table is created once through the ensure hook, then the statement runs',
+	$created === 1 && $lazy->read(0, 'first', 1)['v'] === 'v',
+);
+$neverCreated = new KeyValueRedisStore(static function (): void {});
+$pdoRedis->exec('DROP TABLE key_value_expire');
+$stillMissing = false;
+try {
+	$neverCreated->read(0, 'x', 1);
+} catch (Throwable $e) {
+	$stillMissing = true;
+}
+ok('a table the hook cannot create surfaces the error rather than looping', $stillMissing);
+$pdoRedis->exec(
+	'CREATE TABLE key_value_expire (collection TEXT NOT NULL, name TEXT NOT NULL, value BLOB, expire INTEGER NOT NULL, PRIMARY KEY (collection, name))',
+);
+$sql = new KeyValueRedisStore();
+ok(
+	'the table store writes and reads a key',
+	($sql->write(0, 'a', 'one', null) ?? true) &&
+		$sql->read(0, 'a', 1_800_000_000) === ['v' => 'one', 'expire' => null],
+);
+$redisExpiry = $pdoRedis->query("SELECT expire FROM key_value_expire WHERE name = 'a'");
+ok(
+	'a key with no expiry is stored at the never marker',
+	(int) $redisExpiry->fetchColumn() === RedisStoreInterface::NO_EXPIRY,
+);
+ok(
+	'the collection is cfw_redis plus the database number',
+	$pdoRedis->query("SELECT collection FROM key_value_expire WHERE name = 'a'")->fetchColumn() ===
+		'cfw_redis.0',
+);
+$sql->write(0, 'ttl', 'v', 1_800_000_100);
+ok(
+	'a key is live before its expiry and gone at it',
+	$sql->read(0, 'ttl', 1_800_000_099) !== null && $sql->read(0, 'ttl', 1_800_000_100) === null,
+);
+$sql->write(0, 'a', 'two', null);
+ok(
+	'write replaces rather than duplicates',
+	(int) $pdoRedis
+		->query("SELECT COUNT(*) FROM key_value_expire WHERE name = 'a'")
+		->fetchColumn() === 1 && $sql->read(0, 'a', 1)['v'] === 'two',
+);
+ok(
+	'databases do not see each other',
+	$sql->read(1, 'a', 1) === null &&
+		($sql->write(1, 'a', 'other', null) ?? true) &&
+		$sql->read(0, 'a', 1)['v'] === 'two',
+);
+ok(
+	'delete reports whether a row was there',
+	$sql->delete(1, 'a') === true && $sql->delete(1, 'a') === false,
+);
+$long = str_repeat('k', 200);
+$sql->write(0, $long, 'v', null);
+ok(
+	'a key longer than the column is stored under a digest and read back by its real name',
+	KeyValueRedisStore::nameOf($long) === 'sha256:' . hash('sha256', $long) &&
+		$sql->read(0, $long, 1)['v'] === 'v' &&
+		array_key_exists($long, $sql->all(0, 1)),
+);
+$binary = "\xff\xfe\x00bin";
+$sql->write(0, "b\xff", $binary, null);
+ok(
+	'a binary key and value survive as base64',
+	$sql->read(0, "b\xff", 1)['v'] === $binary &&
+		str_starts_with(KeyValueRedisStore::nameOf("b\xff"), 'sha256:'),
+);
+ok(
+	'all lists live keys by their real names',
+	array_key_exists('a', $sql->all(0, 1_800_000_050)) &&
+		!array_key_exists('ttl', $sql->all(0, 1_800_000_100)),
+);
+$sql->purge(0, 1_800_000_100);
+ok(
+	'purge drops expired rows',
+	(int) $pdoRedis
+		->query("SELECT COUNT(*) FROM key_value_expire WHERE name = 'ttl'")
+		->fetchColumn() === 0,
+);
+ok(
+	'unpack refuses a row this class did not write',
+	KeyValueRedisStore::unpack('garbage') === null &&
+		KeyValueRedisStore::unpack(serialize(['x' => 1])) === null &&
+		KeyValueRedisStore::unpack(serialize(['k' => 1, 'v' => 'x'])) === null,
+);
+ok(
+	'pack and unpack round trip a unicode value',
+	KeyValueRedisStore::unpack(KeyValueRedisStore::pack('k', 'caf' . "\u{e9}")) === [
+		'k' => 'k',
+		'v' => 'caf' . "\u{e9}",
+	],
+);
+$pdoRedis->exec(
+	"INSERT INTO key_value_expire (collection, name, value, expire) VALUES ('cfw_redis.0', 'drangler', '" .
+		str_replace("'", "''", KeyValueRedisStore::pack('drangler', '{"a":1}')) .
+		"', " .
+		RedisStoreInterface::NO_EXPIRY .
+		')',
+);
+StandinRedis::configure(new KeyValueRedisStore(), static function (): int {
+	return 1_800_000_000;
+});
+$carried = new StandinRedis();
+ok(
+	'a row written by drangler in the same shape reads through the stand-in',
+	$carried->get('drangler') === '{"a":1}' && $carried->ttl('drangler') === -1,
+);
+StandinRedis::configure(null);
 // #endregion
 
 echo "\n$pass passed, $fail failed\n";
