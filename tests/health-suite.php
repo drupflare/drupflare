@@ -8055,5 +8055,27 @@ ok(
 StandinRedis::configure(null);
 // #endregion
 
+// #region aggregation override
+$aggregation = new \Drupal\drupflare\Config\AggregationOverride();
+ok(
+	'CSS and JS aggregation is forced off for system.performance',
+	$aggregation->loadOverrides(['system.performance']) === [
+		'system.performance' => ['css' => ['preprocess' => false], 'js' => ['preprocess' => false]],
+	],
+);
+ok(
+	'nothing else is overridden, so the rest of system.performance stays the site\'s',
+	$aggregation->loadOverrides(['system.site', 'system.mail']) === [] &&
+		$aggregation->loadOverrides([]) === [] &&
+		!isset($aggregation->loadOverrides(['system.performance'])['system.performance']['cache']),
+);
+ok(
+	'the override is cacheable with no context and no tag',
+	$aggregation->getCacheableMetadata('system.performance')->getCacheTags() === [] &&
+		$aggregation->getCacheSuffix() === 'drupflare_aggregation' &&
+		$aggregation->createConfigObject('system.performance') === null,
+);
+// #endregion
+
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);

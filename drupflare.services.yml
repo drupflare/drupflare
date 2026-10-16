@@ -10,6 +10,11 @@ services:
     tags:
       - { name: config.factory.override, priority: 300 }
 
+  drupflare.aggregation_override:
+    class: Drupal\drupflare\Config\AggregationOverride
+    tags:
+      - { name: config.factory.override, priority: 300 }
+
   drupflare.http_deferred:
     class: Drupal\drupflare\Queue\CfwDeferredHttp
 
