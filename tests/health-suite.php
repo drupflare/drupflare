@@ -149,6 +149,7 @@ use Drupal\Core\Hook\Attribute\Hook;
 use Drupal\drupflare\Hook\Requirements;
 use Drupal\drupflare\Install\Requirements\DrupflareRequirements;
 use Drupal\drupflare\Plugin\ImageToolkit\CfwImageToolkit;
+use Drupal\drupflare\Form\LeverSlider;
 use Drupal\drupflare\Form\SettingsForm;
 use Drupal\Core\StringTranslation\TranslationInterface;
 use Drupal\Component\Plugin\Exception\PluginNotFoundException;
@@ -4320,6 +4321,19 @@ install_host([
 				'domain' => ['kind' => 'flag'],
 			],
 			['name' => 'NEW_LEVER', 'value' => null, 'source' => 'default'],
+			[
+				'name' => 'WARM_INTERVAL_MS',
+				'value' => '8000',
+				'source' => 'default',
+				'domain' => [
+					'kind' => 'int',
+					'min' => 8000,
+					'max' => 240000,
+					'unit' => 'ms',
+					'default' => 8000,
+					'marks' => [['value' => 8000, 'label' => 'Default and fastest', 'note' => 'n']],
+				],
+			],
 		],
 	]),
 ]);
@@ -4371,7 +4385,125 @@ ok(
 	'a lever an older module does not know still renders as text',
 	$levers['NEW_LEVER']['value']['#type'] === 'textfield',
 );
+ok(
+	'the form builds a numeric lever through the slider element',
+	isset($levers['RENDER_BUDGET_MS']['value']['#attributes']['data-drupflare-slider']) &&
+		$levers['RENDER_BUDGET_MS']['value']['#attached']['library'] === [
+			'drupflare/lever-slider',
+		] &&
+		$levers['RENDER_BUDGET_MS']['value']['#title'] === 'RENDER_BUDGET_MS',
+);
+ok(
+	'a lever with marks carries them and its default, and one without carries neither',
+	isset($levers['WARM_INTERVAL_MS']['value']['#attributes']['data-marks']) &&
+		$levers['WARM_INTERVAL_MS']['value']['#attributes']['data-default'] === '8000' &&
+		!isset($levers['RENDER_BUDGET_MS']['value']['#attributes']['data-marks']) &&
+		!isset($levers['RENDER_BUDGET_MS']['value']['#attributes']['data-default']),
+);
 install_host([]);
+// #endregion
+// #region the lever slider element
+echo "\n# the numeric lever element\n";
+
+$flat = static fn(array $e): string => ($e['#prefix'] ?? '') . ($e['#suffix'] ?? '');
+$plain = LeverSlider::element(['kind' => 'int', 'min' => 0, 'max' => 600], '', '', true);
+ok(
+	'no marks and no default: the domain bounds, no marks list, no default attribute',
+	$plain['#type'] === 'number' &&
+		$plain['#min'] === 0 &&
+		$plain['#max'] === 600 &&
+		$plain['#step'] === 1 &&
+		!isset($plain['#attributes']['data-default']) &&
+		!isset($plain['#attributes']['data-marks']) &&
+		!isset($plain['#attributes']['data-deployed']) &&
+		!str_contains($flat($plain), '<ol') &&
+		str_contains($flat($plain), 'Range 0 to 600.') &&
+		!str_contains($flat($plain), 'Default'),
+);
+$withDefault = LeverSlider::element(
+	['kind' => 'int', 'min' => 100, 'max' => 5000, 'unit' => 'bytes', 'default' => 800],
+	'',
+	'900',
+	true,
+);
+ok(
+	'a default alone is shown and the unit is carried',
+	$withDefault['#attributes']['data-default'] === '800' &&
+		$withDefault['#attributes']['data-deployed'] === '900' &&
+		$withDefault['#attributes']['data-unit'] === 'bytes' &&
+		$withDefault['#field_suffix'] === 'bytes' &&
+		$withDefault['#placeholder'] === '900' &&
+		str_contains($flat($withDefault), 'Default 800 bytes.') &&
+		!isset($withDefault['#attributes']['data-marks']),
+);
+$three = LeverSlider::element(
+	[
+		'kind' => 'int',
+		'min' => 8000,
+		'max' => 240000,
+		'unit' => 'ms',
+		'default' => 8000,
+		'marks' => [
+			['value' => 8000, 'label' => 'Default and fastest', 'note' => 'a'],
+			['value' => 60000, 'label' => 'Middle', 'note' => 'b'],
+			['value' => 240000, 'label' => 'Least energy', 'note' => 'c'],
+			['value' => 999999, 'label' => 'Outside the range', 'note' => 'dropped'],
+			['label' => 'No value'],
+		],
+	],
+	'',
+	'',
+	true,
+);
+$carried = json_decode($three['#attributes']['data-marks'], true);
+ok(
+	'three marks arrive in order, and a mark outside the range or with no value is dropped',
+	array_column($carried, 'value') === [8000, 60000, 240000] &&
+		array_column($carried, 'label') === ['Default and fastest', 'Middle', 'Least energy'] &&
+		substr_count($flat($three), '<li>') === 3 &&
+		!str_contains($flat($three), 'Outside the range'),
+);
+ok('the module library is attached', $three['#attached']['library'] === ['drupflare/lever-slider']);
+$stored = LeverSlider::element(['kind' => 'int', 'min' => 0, 'max' => 600], '12000', '', true);
+ok(
+	'an override of empty and one of 12000 reach the field unchanged, and it is writable',
+	$plain['#default_value'] === '' &&
+		$stored['#default_value'] === '12000' &&
+		$plain['#disabled'] === false,
+);
+$locked = LeverSlider::element(['kind' => 'int', 'min' => 0, 'max' => 600], '', '', false);
+ok('a read-only deployment disables the field', $locked['#disabled'] === true);
+$hostile = LeverSlider::element(
+	[
+		'kind' => 'int',
+		'min' => 0,
+		'max' => 10,
+		'marks' => [
+			[
+				'value' => 5,
+				'label' => '<script>alert(1)</script>',
+				'note' => '"x" & \'y\' <b>z</b>',
+			],
+		],
+	],
+	'',
+	'',
+	true,
+);
+$rendered = $flat($hostile) . (string) $hostile['#attributes']['data-marks'];
+ok(
+	'host-supplied mark text is escaped in the markup and hex-encoded in the attribute',
+	!str_contains($rendered, '<script>') &&
+		!str_contains($rendered, '<b>') &&
+		!str_contains($hostile['#attributes']['data-marks'], '<') &&
+		!str_contains($hostile['#attributes']['data-marks'], '"x"') &&
+		!str_contains($hostile['#attributes']['data-marks'], "'") &&
+		!str_contains($hostile['#attributes']['data-marks'], '&') &&
+		str_contains($flat($hostile), '&lt;script&gt;') &&
+		str_contains($flat($hostile), '&amp;') &&
+		json_decode($hostile['#attributes']['data-marks'], true)[0]['label'] ===
+			'<script>alert(1)</script>',
+);
 // #endregion
 // #region the router dumper's skip
 echo "\n# the router dump that does not rewrite the rows already in the table\n";

@@ -153,6 +153,8 @@ final class SettingsForm extends FormBase
 				$this->field(
 					is_array($lever['domain'] ?? null) ? $lever['domain'] : [],
 					$source === 'kv' ? '' : (string) ($lever['value'] ?? ''),
+					self::override($lever),
+					$writable,
 				);
 			$form['levers'][$name]['source'] = ['#markup' => $this->sourceLabel($source)];
 			$form['levers'][$name]['what'] = [
@@ -180,11 +182,15 @@ final class SettingsForm extends FormBase
 	 *   The lever's domain as the host reports it; empty from a host that reports none.
 	 * @param string $deployed
 	 *   The value in force without an override, shown beside the empty choice.
+	 * @param string $override
+	 *   The stored override, or '' when there is none.
+	 * @param bool $writable
+	 *   False on a read-only deployment.
 	 *
 	 * @return array
 	 *   The element keys that depend on the domain.
 	 */
-	private function field(array $domain, string $deployed): array
+	private function field(array $domain, string $deployed, string $override, bool $writable): array
 	{
 		$empty = [
 			'' =>
@@ -193,18 +199,7 @@ final class SettingsForm extends FormBase
 					: $this->t('Deployed Value (@value)', ['@value' => $deployed]),
 		];
 		return match ($domain['kind'] ?? null) {
-			'int' => [
-				'#type' => 'number',
-				'#placeholder' => $deployed,
-				'#min' => (int) $domain['min'],
-				'#max' => (int) $domain['max'],
-				'#step' => 1,
-				'#field_suffix' => match ($domain['unit'] ?? null) {
-					'ms' => $this->t('ms'),
-					'bytes' => $this->t('bytes'),
-					default => '',
-				},
-			],
+			'int' => LeverSlider::element($domain, $override, $deployed, $writable),
 			'flag' => [
 				'#type' => 'select',
 				'#options' => $empty + ['1' => $this->t('On'), '0' => $this->t('Off')],
