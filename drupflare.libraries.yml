@@ -1,0 +1,10 @@
+lever-slider:
+  version: VERSION
+  js:
+    js/lever-slider.js: {}
+  css:
+    component:
+      css/lever-slider.css: {}
+  dependencies:
+    - core/drupal
+    - core/once
