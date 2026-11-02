@@ -38,6 +38,12 @@ services:
     tags:
       - { name: event_subscriber }
 
+  drupflare.simplesaml_bridge:
+    class: Drupal\drupflare\SimpleSaml\ResponseBridge
+    arguments: ['@module_handler']
+    tags:
+      - { name: event_subscriber }
+
   drupflare.mailer_transport_factory:
     class: Drupal\drupflare\Mail\CfwMailTransportFactory
     tags:

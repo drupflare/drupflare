@@ -117,6 +117,31 @@ stays open, so every request after the first throws `Failed to start the session
 PHP`. `PageCache` memoizes `$this->cid` on a middleware instance that never goes away, which makes
 `/user/login`, `/node/1` and `/admin/content` re-serve the first request's page.
 
+**SimpleSAMLphp keeps its SAML session in statics, and the resetter clears them.** When
+`SimpleSAML\Session` or `SimpleSAML\SessionHandler` is loaded, `reset()` drops the static session, the
+cached session handler and the `simplesamlphp_auth` manager's `Simple` instance and attributes. Left
+alone, a request with no cookie to `/saml_login` was signed in as the previous visitor.
+
+**`Drupal\drupflare\SimpleSaml\DatabaseStore` is a SimpleSAMLphp datastore in the site database.**
+SimpleSAMLphp's own stores need a PDO driver, Predis or memcache, none of which exists in this
+interpreter, and `simplesamlphp_auth` refuses `phpsession`. One line in the SimpleSAMLphp `config.php`
+selects it, because `StoreFactory` accepts a class name for `store.type`:
+
+```php
+'store.type' => 'Drupal\drupflare\SimpleSaml\DatabaseStore',
+```
+
+Sessions, AuthnRequest state and assertion ids then live in the expirable key value table.
+
+**`Drupal\drupflare\SimpleSaml\ResponseBridge` makes SimpleSAMLphp's CGI habits work, when
+`simplesamlphp_auth` is enabled.** It answers the `/simplesaml/module.php/...` endpoints (the web
+server alias SimpleSAMLphp expects) from the request event, turns the library's `exit` off through its
+own `SIMPLESAMLPHP_TEST_NOEXIT` constant and converts the raw `header('Location')` it sets into the
+response, saves the SAML session explicitly because the library does it from a
+`header_register_callback` that never fires here, and installs the SAML2 container that SimpleSAMLphp's
+`_include.php` would. A site owner supplies the SimpleSAMLphp config directory (`Configuration::setConfigDir()`
+from a small module) and the `store.type` line.
+
 ---
 
 ## 🔗 Host Contract
