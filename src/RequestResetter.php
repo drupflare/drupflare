@@ -17,6 +17,8 @@ use Drupal\Core\Session\AnonymousUserSession;
 use Drupal\views\Plugin\views\display\Page as ViewsPage;
 use ReflectionObject;
 use ReflectionProperty;
+use SimpleSAML\Session as SimpleSamlSession;
+use SimpleSAML\SessionHandler as SimpleSamlSessionHandler;
 use SplObjectStorage;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Throwable;
@@ -168,6 +170,7 @@ final class RequestResetter
 		}
 
 		$log['identity'] = $this->resetIdentity();
+		$log['simplesaml'] = $this->resetSimpleSaml();
 		$log['session'] = $this->resetSession();
 		$log['theme'] = $this->resetActiveTheme();
 		$log['collectors'] = $this->resetRequestScopedCollectors();
@@ -197,9 +200,52 @@ final class RequestResetter
 		$log['views_page_render_array_cleared'] = $this->clearViewsPageRenderArray();
 		$log['local_tasks_cleared'] = $this->clearLocalTaskData();
 		$log['entity_access_caches_emptied'] = $this->clearEntityAccessCaches();
+		$log['access_unpublished_token_cleared'] = $this->clearAccessUnpublishedToken();
 		$log['container_loading_cleared'] = $this->clearContainerLoading();
 
 		return $log;
+	}
+
+	/**
+	 * Forgets the SAML session the previous visitor left in SimpleSAMLphp.
+	 *
+	 * `SimpleSAML\Session` keeps the current session in a static, `SessionHandler` keeps a handler
+	 * that caches the session id of the first cookie it read, and the manager of
+	 * `simplesamlphp_auth` keeps a `Simple` that captured that session in its constructor, plus the
+	 * attributes it read from it. Neither is reachable from a service `reset()`. Measured: after one
+	 * IdP login, a request carrying no cookie to `/saml_login` was logged in as the previous visitor.
+	 * Only acts where SimpleSAMLphp has loaded, so a site without it is untouched.
+	 *
+	 * @return array
+	 *   What was cleared.
+	 */
+	private function resetSimpleSaml(): array
+	{
+		$out = [];
+		if (class_exists(SimpleSamlSession::class, false)) {
+			SimpleSamlSession::clearInternalState();
+			$out['session'] = true;
+		}
+		// the handler is long lived and caches the session id it first read from a cookie
+		if (class_exists(SimpleSamlSessionHandler::class, false)) {
+			(new ReflectionProperty(SimpleSamlSessionHandler::class, 'sessionHandler'))->setValue(
+				null,
+				null,
+			);
+			$out['handler'] = true;
+		}
+		try {
+			if ($this->container->initialized('simplesamlphp_auth.manager')) {
+				$manager = $this->container->get('simplesamlphp_auth.manager');
+				foreach (['instance', 'attributes'] as $name) {
+					(new ReflectionProperty($manager, $name))->setValue($manager, null);
+				}
+				$out['manager'] = true;
+			}
+		} catch (Throwable $e) {
+			$out['error'] = substr($e->getMessage(), 0, 120);
+		}
+		return $out;
 	}
 
 	/**
@@ -595,6 +641,37 @@ final class RequestResetter
 			Degradation::record(
 				'request reset local tasks',
 				'local tasks built for one page survived into the next request, so its tabs can point at another page: ' .
+					$e->getMessage(),
+			);
+			return false;
+		}
+	}
+
+	/**
+	 * Forgets the `auHash` token that `access_unpublished` read from the last request.
+	 *
+	 * `TokenGetter` sets its token from the query string and nothing sets it back, so on a
+	 * persistent interpreter a visitor with no token inherited the previous visitor's and was shown
+	 * the unpublished node it unlocks. The service has no reset(), and it is only touched when the
+	 * request built it.
+	 */
+	private function clearAccessUnpublishedToken(): bool
+	{
+		$id = 'access_unpublished.token_getter';
+		if (!$this->container->initialized($id)) {
+			return false;
+		}
+		try {
+			$getter = $this->container->get($id);
+			if (!method_exists($getter, 'setToken')) {
+				return false;
+			}
+			$getter->setToken(null);
+			return true;
+		} catch (Throwable $e) {
+			Degradation::record(
+				'request reset access_unpublished token',
+				'an access_unpublished token survived into the next request, so an unpublished node can be shown to a visitor with no token: ' .
 					$e->getMessage(),
 			);
 			return false;

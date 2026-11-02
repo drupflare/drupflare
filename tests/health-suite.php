@@ -94,6 +94,8 @@ use Drupal\drupflare\Health\Tripwire\DbTxnLeaked;
 use Drupal\drupflare\Health\Tripwire\SqlLikeOver50;
 use Drupal\drupflare\Health\Tripwire\SqlParamsOver100;
 use Drupal\drupflare\Shim\CryptoShim;
+use Drupal\drupflare\SimpleSaml\DatabaseStore;
+use Drupal\drupflare\SimpleSaml\ResponseBridge;
 use Drupal\drupflare\Shim\CurlShim;
 use Drupal\drupflare\Shim\ShimRefusal;
 use Drupal\drupflare\Shim\ShimRegistry;
@@ -1522,6 +1524,200 @@ ok('the reset clears the stale mark', ($log['container_loading_cleared'] ?? null
 ok('so the next get() fails for its real reason', $afterReset === 'Error', $afterReset);
 $clean = (new RequestResetter(resetter_container([]), []))->reset();
 ok('a clean boundary clears nothing', ($clean['container_loading_cleared'] ?? null) === []);
+
+echo "\n# SimpleSAMLphp keeps the previous visitor's SAML session in a static\n";
+
+// a site without the library is untouched: the class is not loaded, so nothing is asked of it
+$absent = (new RequestResetter(resetter_container([]), []))->reset();
+ok('a site without SimpleSAMLphp has nothing to clear', ($absent['simplesaml'] ?? null) === []);
+
+require_once __DIR__ . '/fixtures/simplesaml-stubs.php';
+$manager = new \Drupal\simplesamlphp_auth\Service\SimplesamlphpAuthManager();
+\SimpleSAML\Session::$instance = new \SimpleSAML\Session();
+\SimpleSAML\SessionHandler::hold(new stdClass());
+$manager->remember(new stdClass(), ['uid' => ['previous-visitor']]);
+// THE CONTROL: without a reset the next request inherits the login, which is the leak measured on
+// a real IdP login, where a cookie-less /saml_login came back signed in as the previous visitor
+ok(
+	'before the reset the next request would inherit the session and the attributes',
+	\SimpleSAML\Session::$instance !== null &&
+		\SimpleSAML\SessionHandler::holds() &&
+		$manager->holds(),
+);
+$log = (new RequestResetter(
+	resetter_container(['simplesamlphp_auth.manager' => $manager]),
+	[],
+))->reset();
+ok('the reset drops the static session', \SimpleSAML\Session::$instance === null);
+ok('and the handler that caches its id', !\SimpleSAML\SessionHandler::holds());
+ok('and the manager Simple instance and attributes', !$manager->holds());
+ok(
+	'and records both',
+	($log['simplesaml'] ?? null) === ['session' => true, 'handler' => true, 'manager' => true],
+	json_encode($log['simplesaml'] ?? null),
+);
+
+echo "\n# the SimpleSAMLphp store backed by the site database\n";
+
+class RecordingExpirable
+{
+	/**
+	 * The rows written, by key.
+	 *
+	 * @var array<string, array{value: mixed, seconds: int}>
+	 */
+	public array $rows = [];
+
+	public function get(string $key): mixed
+	{
+		return $this->rows[$key]['value'] ?? null;
+	}
+
+	public function setWithExpire(string $key, mixed $value, int $seconds): void
+	{
+		$this->rows[$key] = ['value' => $value, 'seconds' => $seconds];
+	}
+
+	public function delete(string $key): void
+	{
+		unset($this->rows[$key]);
+	}
+}
+
+class MemoryStore extends DatabaseStore
+{
+	/**
+	 * The recording collections, by data type.
+	 *
+	 * @var array<string, RecordingExpirable>
+	 */
+	public array $bins = [];
+
+	protected function bin(string $type): object
+	{
+		return $this->bins[$type] ??= new RecordingExpirable();
+	}
+}
+
+$store = new MemoryStore();
+ok(
+	'it implements SimpleSAMLphp\'s store interface, which is what store.type needs',
+	$store instanceof \SimpleSAML\Store\StoreInterface,
+);
+$store->set('session', 'abc', ['uid' => 7], time() + 600);
+ok('a value is read back as it was written', $store->get('session', 'abc') === ['uid' => 7]);
+$ttl = $store->bins['session']->rows['abc']['seconds'];
+ok('an absolute expiry becomes the seconds left', $ttl > 590 && $ttl <= 600, (string) $ttl);
+ok('types do not share keys', $store->get('state', 'abc') === null);
+$store->set('state', 'forever', 'x');
+ok(
+	'no expiry is stored as a year, not as no limit',
+	$store->bins['state']->rows['forever']['seconds'] === 31536000,
+);
+$store->set('state', 'late', 'x', time() - 10);
+ok('a past expiry still stores one second', $store->bins['state']->rows['late']['seconds'] === 1);
+$store->delete('session', 'abc');
+ok('delete removes the value', $store->get('session', 'abc') === null);
+$long = str_repeat('k', 200);
+$store->set('session', $long, 'v', time() + 60);
+ok(
+	'a key over the column width is stored under its digest and read back by its real name',
+	$store->get('session', $long) === 'v' &&
+		array_key_first($store->bins['session']->rows) === 'sha256:' . hash('sha256', $long),
+);
+
+echo "\n# the SimpleSAMLphp response bridge\n";
+
+class NoKernel implements \Symfony\Component\HttpKernel\HttpKernelInterface
+{
+	public function handle(
+		\Symfony\Component\HttpFoundation\Request $request,
+		int $type = self::MAIN_REQUEST,
+		bool $catch = true,
+	): \Symfony\Component\HttpFoundation\Response {
+		return new \Symfony\Component\HttpFoundation\Response();
+	}
+}
+
+class SpyHandler extends \Drupal\Core\Extension\ModuleHandler
+{
+	public function __construct(private bool $has) {}
+
+	public function moduleExists($module): bool
+	{
+		return $this->has;
+	}
+}
+
+class SpyBridge extends ResponseBridge
+{
+	public ?string $raw = null;
+	public int $saves = 0;
+
+	protected function location(): ?string
+	{
+		return $this->raw;
+	}
+
+	protected function saveSession(): void
+	{
+		$this->saves++;
+	}
+
+	public ?string $served = null;
+
+	protected function serve(
+		\Symfony\Component\HttpFoundation\Request $request,
+	): \Symfony\Component\HttpFoundation\Response {
+		$this->served = $request->getPathInfo();
+		return new \Symfony\Component\HttpFoundation\Response('served');
+	}
+}
+
+$kernel = new NoKernel();
+$main = \Symfony\Component\HttpFoundation\Request::create('/saml_login');
+$levels = ob_get_level();
+$idle = new SpyBridge(new SpyHandler(false));
+$idle->start(new \Symfony\Component\HttpKernel\Event\RequestEvent($kernel, $main, 1));
+ok(
+	'without simplesamlphp_auth the bridge opens no buffer and defines nothing',
+	ob_get_level() === $levels && !defined('SIMPLESAMLPHP_TEST_NOEXIT'),
+);
+$response = new \Symfony\Component\HttpFoundation\Response('drupal');
+$idleEvent = new \Symfony\Component\HttpKernel\Event\ResponseEvent($kernel, $main, 1, $response);
+$idle->finish($idleEvent);
+ok('and leaves the response alone', $idleEvent->getResponse() === $response && $idle->saves === 0);
+
+$bridge = new SpyBridge(new SpyHandler(true));
+$bridge->start(new \Symfony\Component\HttpKernel\Event\RequestEvent($kernel, $main, 1));
+$opened = ob_get_level() === $levels + 1 && defined('SIMPLESAMLPHP_TEST_NOEXIT');
+echo 'the library page';
+$bridge->raw = 'http://idp.example/sso?SAMLRequest=x';
+$event = new \Symfony\Component\HttpKernel\Event\ResponseEvent($kernel, $main, 1, $response);
+$bridge->finish($event);
+$out = $event->getResponse();
+ok('with it the bridge opens a buffer and turns SimpleSAMLphp\'s exit off', $opened);
+ok(
+	'a raw Location header becomes the response, with what the library echoed as its body',
+	$out->headers->get('Location') === 'http://idp.example/sso?SAMLRequest=x' &&
+		$out->getContent() === 'the library page' &&
+		$out->getStatusCode() === 303,
+	json_encode([$out->headers->get('Location'), $out->getContent(), $out->getStatusCode()]),
+);
+ok(
+	'the session is saved before the headers are read, and the buffer is closed',
+	$bridge->saves === 1 && ob_get_level() === $levels,
+);
+
+$bridge->start(new \Symfony\Component\HttpKernel\Event\RequestEvent($kernel, $main, 1));
+$bridge->raw = null;
+$plain = new \Symfony\Component\HttpFoundation\Response('kept');
+$plainEvent = new \Symfony\Component\HttpKernel\Event\ResponseEvent($kernel, $main, 1, $plain);
+$bridge->finish($plainEvent);
+ok(
+	'no raw redirect leaves the Drupal response in place',
+	$plainEvent->getResponse() === $plain && ob_get_level() === $levels,
+);
 
 echo "\n# the account switcher stack, which is the OTHER half of the disclosure\n";
 
