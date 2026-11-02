@@ -60,8 +60,9 @@ class CfwCacheBackendFactory extends DatabaseBackendFactory
 	/**
 	 * Bins the interpreter keeps in memory, from settings.
 	 *
-	 * Empty by default. What the lever buys is measured -- a real re-render after a tag
-	 * invalidation charges 9 rows on the shipping pack, 6 of them the dynamic_page_cache bin --
+	 * Empty when the settings name none; the worker's settings override names dynamic_page_cache
+	 * and menu, so a shipped site keeps both in memory. What the lever buys is measured -- a real
+	 * render of /user/login charges 8 rows with both bins in SQL and 1 at the shipping default --
 	 * and what it costs back is a rebuild after every interpreter drop, which is a property of a
 	 * site's own traffic rather than of the code.
 	 *
