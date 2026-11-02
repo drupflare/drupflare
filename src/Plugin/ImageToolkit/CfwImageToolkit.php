@@ -40,12 +40,10 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
  * an operator their site used a product it does not use, and buildConfigurationForm() said there
  * was nothing to configure while the choice sat in a deployed variable.
  */
-#[
-	ImageToolkit(
-		id: 'cfw_images',
-		title: new TranslatableMarkup('Drupflare (delivery-time resizing)'),
-	),
-]
+#[ImageToolkit(
+	id: 'cfw_images',
+	title: new TranslatableMarkup('Drupflare (delivery-time resizing)'),
+)]
 class CfwImageToolkit extends ImageToolkitBase
 {
 	/**
