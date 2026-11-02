@@ -81,6 +81,17 @@
 	</rule>
 
 	<!--
+		This sniff tracks every variable in a scope against every other, so its cost grows faster
+		than the scope does. health-suite.php is one 8,400-line script with a single global scope,
+		and measured on a 4,000-line copy the sniff alone took 31.5 of 45 seconds; the whole file
+		took about 7 minutes with it and 12 seconds without, past the 10 minute CI timeout. The
+		suite runs every line on each CI job, so an undefined variable fails there.
+	-->
+	<rule ref="VariableAnalysis.CodeAnalysis.VariableAnalysis">
+		<exclude-pattern>tests/health-suite.php</exclude-pattern>
+	</rule>
+
+	<!--
 		The sniff wants globals prefixed like `$_modulename_foo`, which is for module files.
 		These are counters in a standalone test harness that never runs inside Drupal.
 	-->
