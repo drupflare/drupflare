@@ -364,6 +364,11 @@ final class DrupflareServiceProvider implements ServiceProviderInterface
 			// per request and wrong here: measured, 48 tags sat memoised across a whole incarnation,
 			// so a second menu-item save wrote no `config:system.menu.main` row and purged nothing
 			'cache_tags.invalidator.checksum',
+			// strata's capture switch is resolved once per container, so a settings save is invisible
+			// until it is reset. strata is unmodified, so it cannot tag its own service.
+			// RULE: a contrib service that holds per-request state needs an entry here until a generic
+			// reset of resettable services is measured (open objective: DRUPFLARE_ROADMAP.md)
+			'strata.capture_scope',
 		];
 
 		$resettable = [];
