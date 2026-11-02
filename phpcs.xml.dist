@@ -211,4 +211,9 @@
 		<exclude-pattern>stubs/*</exclude-pattern>
 		<exclude-pattern>tests/*</exclude-pattern>
 	</rule>
+
+	<rule ref="Squiz.Classes.ClassFileName.NoMatch">
+		<exclude-pattern>stubs/*</exclude-pattern>
+		<exclude-pattern>tests/*</exclude-pattern>
+	</rule>
 </ruleset>

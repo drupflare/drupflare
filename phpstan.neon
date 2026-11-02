@@ -7,6 +7,8 @@ parameters:
         # stubs/ declares the RUNTIME's own symbols: vrzno_* from the extension, pw_* from the
         # php-wasm build. Nothing else declares them anywhere.
         - stubs/vrzno.php
+        # the SimpleSAMLphp classes src/SimpleSaml/ names; the library is not a dependency here.
+        - stubs/simplesaml.php
         # Drupal's procedural functions are NOT autoloadable -- classes resolve through composer,
         # but drupal_static_reset() and friends live in include files that only a booted kernel
         # requires, so phpstan never sees them. These are the real definitions from the real
