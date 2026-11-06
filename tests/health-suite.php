@@ -2467,6 +2467,13 @@ class FileHost
 	public $refuseWrites = false;
 
 	/**
+	 * URIs whose bytes sit in R2: present to stat, answered `offloaded` to a read.
+	 *
+	 * @var array
+	 */
+	public $offloaded = [];
+
+	/**
 	 * Hangs every file capability on the bridge.
 	 */
 	public function install(): void
@@ -2515,6 +2522,9 @@ class FileHost
 		$uri = (string) ($request['uri'] ?? '');
 		switch ($op) {
 			case 'read':
+				if (isset($this->offloaded[$uri])) {
+					return ['ok' => false, 'offloaded' => true];
+				}
 				return isset($this->files[$uri])
 					? ['ok' => true, 'b64' => base64_encode($this->files[$uri])]
 					: ['ok' => false];
@@ -2623,6 +2633,22 @@ $handle = fopen('public://append.txt', 'a');
 fwrite($handle, '-two');
 fclose($handle);
 ok('append starts at the end', $fileHost->files['public://append.txt'] === 'one-two');
+
+// an offloaded file is not an absent one: every open that reads must fail, or an append truncates it
+$fileHost->files['public://cold.txt'] = 'archived';
+$fileHost->offloaded['public://cold.txt'] = true;
+ok('fopen r on an offloaded file fails', @fopen('public://cold.txt', 'r') === false);
+ok(
+	'fopen a on an offloaded file fails instead of starting empty',
+	@fopen('public://cold.txt', 'a') === false,
+);
+ok('fopen r+ on an offloaded file fails', @fopen('public://cold.txt', 'r+') === false);
+ok('and nothing replaced its bytes', $fileHost->files['public://cold.txt'] === 'archived');
+ok(
+	'a write open does not read, so it still replaces the file',
+	($h = fopen('public://cold.txt', 'w')) !== false && fclose($h),
+);
+unset($fileHost->offloaded['public://cold.txt']);
 
 $handle = fopen('public://a.txt', 'r');
 ok('a read-only handle refuses a write', fwrite($handle, 'x') === 0);

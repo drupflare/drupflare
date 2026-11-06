@@ -177,6 +177,15 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 				$assembled = '';
 				for ($seq = 0; $seq < $chunks; $seq++) {
 					$part = Host::call('cfwFileRead', ['uri' => $path, 'seq' => $seq]);
+					if (($part['offloaded'] ?? false) === true) {
+						return $this->fail(
+							$options,
+							sprintf(
+								'%s is offloaded to R2; a restore is queued, retry shortly',
+								$path,
+							),
+						);
+					}
 					if (($part['ok'] ?? false) !== true || !array_key_exists('b64', $part)) {
 						return $this->fail(
 							$options,
@@ -188,6 +197,14 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 				$this->buffer = $assembled;
 			} else {
 				$reply = Host::call('cfwFileRead', ['uri' => $path]);
+				// an offloaded file exists but its bytes are in R2 and PHP cannot wait for them;
+				// treating it as absent would let an append or r+ replace it with a fragment
+				if (($reply['offloaded'] ?? false) === true) {
+					return $this->fail(
+						$options,
+						sprintf('%s is offloaded to R2; a restore is queued, retry shortly', $path),
+					);
+				}
 				$found = ($reply['ok'] ?? false) === true;
 				if (!$found && $base === 'r') {
 					// 'r' on an absent file is a failure; 'a' and 'w' create it
