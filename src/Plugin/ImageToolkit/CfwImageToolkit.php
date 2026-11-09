@@ -19,12 +19,13 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
 /**
  * An image toolkit that never processes an image.
  *
- * Gd is not compiled into the wasm build -- it cost 684,821 bytes and
- * the platform already has Cloudflare Images, which resizes on delivery from a URL
- * rather than by rewriting files. So the correct toolkit here does NOT generate
- * derivatives: it records the source dimensions so Drupal's render pipeline can
- * emit correct width and height attributes, and reports every manipulation as
- * successful-but-deferred so image styles do not fail.
+ * Gd is not compiled into the wasm build; the shim answers a subset of it, including
+ * `imagegd2`, which is all `GDToolkit::isAvailable()` tests, so `GDToolkit` is selectable and
+ * works for the operations the shim covers. Choosing it builds every derivative at save time
+ * through a park instead of resizing on delivery, so this toolkit stays the default
+ * (`Image\ToolkitDefault` replaces core's `gd` value at install and update). It does NOT
+ * generate derivatives: it records the source dimensions so Drupal's render pipeline can emit
+ * correct width and height attributes.
  *
  * No operation plugin ships, so `apply()` answers FALSE for every effect and a style
  * is never built through Drupal. The public style URL is rewritten to the delivery

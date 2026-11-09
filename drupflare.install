@@ -13,6 +13,7 @@
 
 declare(strict_types=1);
 
+use Drupal\drupflare\Image\ToolkitDefault;
 use Drupal\drupflare\StreamWrapper\HttpsStreamWrapper;
 
 /**
@@ -22,6 +23,15 @@ function drupflare_install(): void
 {
 	// drupflare.module registers these on every request, from ModuleHandler::loadAll()
 	HttpsStreamWrapper::register();
+	ToolkitDefault::apply();
+}
+
+/**
+ * Keeps cfw_images as the image toolkit on a site that still names core's default.
+ */
+function drupflare_update_11001(): void
+{
+	ToolkitDefault::apply();
 }
 
 /**

@@ -168,8 +168,9 @@ final class Requirements
 			];
 		}
 
-		// gd is not compiled in, so `cfw_images` is the only toolkit a site can have. A missing
-		// one is silent otherwise: every derivative fails and nothing on the status page says so
+		// `GDToolkit` is available because the gd shim defines `imagegd2`, and `cfw_images` is the
+		// default. No toolkit at all is silent otherwise: every derivative fails and nothing on
+		// the status page says so
 		$toolkits = [];
 		try {
 			$toolkits = array_keys(
@@ -189,7 +190,7 @@ final class Requirements
 			'description' =>
 				$toolkits === []
 					? new TranslatableMarkup(
-						'No image toolkit is available, so every image style silently produces nothing. This build has no gd, so cfw_images is the only toolkit that can serve; check that the Drupflare module is enabled and that the host exposes cfwImageUrl.',
+						'No image toolkit is available, so every image style silently produces nothing. Neither cfw_images nor the gd stand-in answered; check that the Drupflare module is enabled, that the host exposes cfwImageUrl and that the stand-ins loaded.',
 					)
 					: null,
 			'severity' => $toolkits === [] ? RequirementSeverity::Error : RequirementSeverity::OK,

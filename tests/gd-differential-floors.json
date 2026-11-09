@@ -1,0 +1,163 @@
+{
+	"imageavif encodes avif": {
+		"avif": 36,
+		"jpeg_sf24": 41,
+		"webp": 39
+	},
+	"imagecopy blending off, so alpha is stored": {
+		"avif": 89
+	},
+	"imagecopy onto a filled canvas at an offset": {
+		"avif": 93
+	},
+	"imagecopymerge merge 100 percent": {
+		"avif": 89
+	},
+	"imagecopymerge merge 25 percent": {
+		"avif": 93
+	},
+	"imagecopymerge merge 50 percent": {
+		"avif": 90
+	},
+	"imagecopyresampled a canvas copied onto a canvas, as GDToolkit resizes then converts": {
+		"jpeg_sf24": 38,
+		"jpeg_walk": 38,
+		"png_alpha": 35,
+		"png_rgb": 30,
+		"gif_palette": 35,
+		"webp": 29,
+		"avif": 29
+	},
+	"imagecopyresampled imagecopyresampled region": {
+		"avif": 37,
+		"gif_palette": 43,
+		"jpeg_sf24": 42,
+		"jpeg_walk": 50,
+		"png_alpha": 43,
+		"png_rgb": 36,
+		"webp": 47
+	},
+	"imagecopyresized imagecopyresized region": {
+		"avif": 86
+	},
+	"imagecreatefromavif reads a file of its format": {
+		"avif": 89
+	},
+	"imagecreatefromstring decode and re-encode as png": {
+		"avif": 89
+	},
+	"imagefilter brightness +40": {
+		"avif": 89
+	},
+	"imagefilter brightness -60": {
+		"avif": 89
+	},
+	"imagefilter contrast -40": {
+		"avif": 83
+	},
+	"imagefilter contrast 30": {
+		"avif": 91
+	},
+	"imagefilter edgedetect": {
+		"avif": 77
+	},
+	"imagefilter emboss": {
+		"avif": 82
+	},
+	"imagefilter grayscale": {
+		"avif": 78,
+		"jpeg_walk": 96,
+		"png_rgb": 72,
+		"webp": 68
+	},
+	"imagefilter mean removal": {
+		"avif": 71
+	},
+	"imagefilter negate": {
+		"avif": 89
+	},
+	"imagefilter smooth -3": {
+		"avif": 86
+	},
+	"imagefilter smooth 5": {
+		"avif": 90
+	},
+	"imageflip mode 1": {
+		"avif": 89
+	},
+	"imageflip mode 2": {
+		"avif": 89
+	},
+	"imageflip mode 3": {
+		"avif": 89
+	},
+	"imagegd2 compressed, chunk 64 that divides no extent": {
+		"avif": 89
+	},
+	"imagegd2 raw, chunk 77 that divides no extent": {
+		"avif": 89
+	},
+	"imagegd2 raw, default chunk and mode": {
+		"avif": 89
+	},
+	"imagegif encodes gif": {
+		"avif": 29,
+		"jpeg_sf24": 36,
+		"png_alpha": 37,
+		"webp": 31
+	},
+	"imagejpeg encodes jpeg": {
+		"avif": 48,
+		"jpeg_sf24": 49,
+		"png_alpha": 53,
+		"webp": 49
+	},
+	"imagepng encodes png": {
+		"avif": 89
+	},
+	"imagerotate a resized canvas turned 90 degrees, as GDToolkit rotates after a resize": {
+		"jpeg_sf24": 38,
+		"jpeg_walk": 38,
+		"png_alpha": 35,
+		"png_rgb": 30,
+		"gif_palette": 35,
+		"webp": 29,
+		"avif": 29
+	},
+	"imagerotate angle 180": {
+		"avif": 89
+	},
+	"imagerotate angle 270": {
+		"avif": 89
+	},
+	"imagerotate angle 37": {
+		"avif": 19,
+		"gif_palette": 29,
+		"jpeg_sf24": 28,
+		"jpeg_walk": 28,
+		"png_alpha": 26,
+		"png_rgb": 22,
+		"webp": 20
+	},
+	"imagerotate angle 90": {
+		"avif": 89
+	},
+	"imagescale nearest neighbour": {
+		"avif": 88
+	},
+	"imagescale width only": {
+		"avif": 19,
+		"gif_palette": 26,
+		"jpeg_sf24": 26,
+		"jpeg_walk": 26,
+		"png_alpha": 20,
+		"png_rgb": 22,
+		"webp": 19
+	},
+	"imagewebp encodes webp": {
+		"avif": 33,
+		"jpeg_sf24": 39,
+		"png_alpha": 35,
+		"webp": 35
+	}
+}

@@ -91,27 +91,8 @@
 		<exclude-pattern>tests/health-suite.php</exclude-pattern>
 	</rule>
 
-	<!--
-		The sniff wants globals prefixed like `$_modulename_foo`, which is for module files.
-		These are counters in a standalone test harness that never runs inside Drupal.
-	-->
-	<rule ref="Drupal.NamingConventions.ValidGlobal">
-		<exclude-pattern>tests/*</exclude-pattern>
-	</rule>
-
-	<!--
-		Same reasoning as ValidGlobal above, and the same scope. A suite here is a standalone
-		PHP script rather than a PSR-4 tree, and its fakes - a spy service, a stub middleware
-		link, a fake host - are only meaningful next to the assertions that drive them. One
-		file per class would turn one readable suite into a dozen fixtures nothing else loads,
-		and neither sniff is about a class a consumer ever installs.
-	-->
-	<rule ref="Squiz.Classes.ClassFileName">
-		<exclude-pattern>tests/*</exclude-pattern>
-	</rule>
-	<rule ref="DrupalPractice.General.ClassName.ClassPrefix">
-		<exclude-pattern>tests/*</exclude-pattern>
-	</rule>
+	<exclude-pattern>*/stubs/*</exclude-pattern>
+	<exclude-pattern>*/tests/*</exclude-pattern>
 
 	<!--
 		RequestResetter::verify() is a diagnostic: its job is to read the SAME global container the
@@ -184,11 +165,6 @@
 		<exclude-pattern>src/Shim/Transliterator.php</exclude-pattern>
 	</rule>
 
-	<rule ref="Drupal.Classes.FullyQualifiedNamespace.UseStatementMissing">
-		<exclude-pattern>stubs/*</exclude-pattern>
-		<exclude-pattern>tests/*</exclude-pattern>
-	</rule>
-
 	<rule ref="Drupal.Commenting.VariableComment.Missing">
 		<exclude-pattern>stubs/*</exclude-pattern>
 		<exclude-pattern>tests/*</exclude-pattern>
@@ -197,23 +173,4 @@
 		<exclude-pattern>src/Shim/Transliterator.php</exclude-pattern>
 	</rule>
 
-	<rule ref="Drupal.Commenting.ClassComment.Missing">
-		<exclude-pattern>stubs/*</exclude-pattern>
-		<exclude-pattern>tests/*</exclude-pattern>
-	</rule>
-
-	<rule ref="Squiz.WhiteSpace.FunctionSpacing.Before">
-		<exclude-pattern>stubs/*</exclude-pattern>
-		<exclude-pattern>tests/*</exclude-pattern>
-	</rule>
-
-	<rule ref="Squiz.WhiteSpace.FunctionSpacing.After">
-		<exclude-pattern>stubs/*</exclude-pattern>
-		<exclude-pattern>tests/*</exclude-pattern>
-	</rule>
-
-	<rule ref="Squiz.Classes.ClassFileName.NoMatch">
-		<exclude-pattern>stubs/*</exclude-pattern>
-		<exclude-pattern>tests/*</exclude-pattern>
-	</rule>
 </ruleset>

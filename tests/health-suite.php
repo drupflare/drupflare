@@ -77,6 +77,7 @@ function ok(string $label, bool $condition, string $detail = ''): void
 
 use Drupal\drupflare\Degradation;
 use Drupal\drupflare\Image\DeliveryTransform;
+use Drupal\drupflare\Image\ToolkitDefault;
 use Drupal\drupflare\Ops\CommandLine;
 use Drupal\drupflare\Health\BootSelfTest;
 use Drupal\drupflare\Health\CircuitBreaker;
@@ -652,7 +653,7 @@ foreach (
 		// `openssl_private_encrypt`: each turned out to have a synchronous `node:crypto` primitive
 		// behind it and a named caller. `openssl_csr_new` is the one with nothing behind it at all
 		'openssl_csr_new' => 'CSR generation',
-		'imagecolorallocate' => 'gd pixels',
+		'imagecolorat' => 'gd pixels',
 		'pfsockopen' => 'pfsockopen',
 		'fsockopen' => 'fsockopen',
 		'stream_socket_client' => 'raw sockets',
@@ -681,7 +682,7 @@ foreach (
 
 ok(
 	'a gd refusal points at CfwImageToolkit rather than just failing',
-	str_contains(ShimRegistry::alternative('imagecolorallocate'), 'CfwImageToolkit'),
+	str_contains(ShimRegistry::alternative('imagecolorat'), 'CfwImageToolkit'),
 );
 foreach (['imagecreatetruecolor', 'imagescale', 'imagejpeg', 'imagecopyresampled'] as $fn) {
 	ok("$fn is routed through the gd stand-in", ShimRegistry::via($fn) === 'Shim\\Gd');
@@ -5689,6 +5690,25 @@ ok(
 );
 // #endregion
 
+// #region toolkit selection survives gd being available
+ok(
+	'the core default gd is replaced by cfw_images',
+	ToolkitDefault::replacement('gd') === 'cfw_images',
+);
+ok(
+	'cfw_images stays, and so does any other choice an admin made',
+	ToolkitDefault::replacement('cfw_images') === null &&
+		ToolkitDefault::replacement('imagemagick') === null &&
+		ToolkitDefault::replacement(null) === null,
+);
+ok('with no container nothing is written', ToolkitDefault::apply() === false);
+require_once $root . '/drupflare.install';
+ok(
+	'install and update hooks both run the selection',
+	function_exists('drupflare_install') && function_exists('drupflare_update_11001'),
+);
+// #endregion
+
 // #region image styles as one delivery transform
 $shipped = DeliveryTransform::fromEffects([
 	['id' => 'image_scale', 'data' => ['width' => 220, 'height' => 220, 'upscale' => false]],
@@ -6610,7 +6630,9 @@ if (function_exists('imagecreatetruecolor') && function_exists('imagewebp')) {
 					$im,
 					$op['width'],
 					$op['height'],
-					$op['filter'] === 'nearest' ? IMG_NEAREST_NEIGHBOUR : IMG_BILINEAR_FIXED,
+					in_array($op['filter'], ['nearest', 'stretch'], true)
+						? IMG_NEAREST_NEIGHBOUR
+						: IMG_BILINEAR_FIXED,
 				);
 			} elseif ($op['op'] === 'rotate') {
 				$im = imagerotate($im, fmod(360 - $op['degrees'], 360), $op['background']);
@@ -6786,9 +6808,9 @@ if (function_exists('imagecreatetruecolor') && function_exists('imagewebp')) {
 	$resized = Gd::imagecreatetruecolor(30, 20);
 	Gd::imagecopyresized($resized, $shim, 0, 0, 0, 0, 30, 20, 120, 80);
 	ok(
-		'imagecopyresized asks for the nearest filter',
+		'imagecopyresized asks for the stretch filter, which is gd\'s own nearest sampling',
 		(function () use ($resized) {
-			return end($resized->ops)['filter'] === 'nearest';
+			return end($resized->ops)['filter'] === 'stretch';
 		})(),
 	);
 
@@ -7087,6 +7109,580 @@ if (function_exists('imagecreatetruecolor') && function_exists('imagewebp')) {
 		Gd::CONSTANTS['IMG_BILINEAR_FIXED'] === IMG_BILINEAR_FIXED &&
 			Gd::CONSTANTS['IMG_NEAREST_NEIGHBOUR'] === IMG_NEAREST_NEIGHBOUR &&
 			Gd::CONSTANTS['IMG_WEBP'] === IMG_WEBP,
+	);
+
+	// the eighteen functions tier 1 adds: queue shapes and color bookkeeping, against native gd
+	echo "\n# gd tier 1: copy, merge, fill, flip, filters, color table, flags, AVIF\n";
+	foreach (
+		[
+			'IMG_AVIF',
+			'IMG_FLIP_HORIZONTAL',
+			'IMG_FLIP_VERTICAL',
+			'IMG_FLIP_BOTH',
+			'IMG_FILTER_NEGATE',
+			'IMG_FILTER_GRAYSCALE',
+			'IMG_FILTER_BRIGHTNESS',
+			'IMG_FILTER_CONTRAST',
+			'IMG_FILTER_EDGEDETECT',
+			'IMG_FILTER_EMBOSS',
+			'IMG_FILTER_MEAN_REMOVAL',
+			'IMG_FILTER_SMOOTH',
+		]
+		as $name
+	) {
+		ok("$name has gd's value", Gd::CONSTANTS[$name] === constant($name));
+	}
+	foreach (
+		[
+			'imagecopy',
+			'imagecopymerge',
+			'imagecolorallocate',
+			'imagecolorallocatealpha',
+			'imagecolortransparent',
+			'imagecolorsforindex',
+			'imagecolorstotal',
+			'imagecolorexactalpha',
+			'imageistruecolor',
+			'imagetruecolortopalette',
+			'imagefill',
+			'imagefilter',
+			'imageflip',
+			'imageinterlace',
+			'imageantialias',
+			'imagecreatefromavif',
+			'imageavif',
+			'imagegd2',
+			'gd_info',
+			'imagetypes',
+		]
+		as $fn
+	) {
+		ok("$fn is routed through the gd stand-in", ShimRegistry::via($fn) === 'Shim\\Gd');
+		ok("$fn exists on Gd", method_exists(Gd::class, $fn));
+	}
+	ok(
+		'imagetypes reports no bit native gd lacks',
+		(Gd::imagetypes() & ~imagetypes()) === 0 && (Gd::imagetypes() & IMG_AVIF) !== 0,
+	);
+	$info = Gd::gd_info();
+	$nativeInfo = gd_info();
+	ok(
+		'gd_info lists as supported only what native gd supports',
+		array_filter(
+			$info,
+			fn($v, $k) => $v === true && ($nativeInfo[$k] ?? false) !== true,
+			ARRAY_FILTER_USE_BOTH,
+		) === [],
+	);
+
+	$base = Gd::imagecreatefromstring($srcPng);
+	$canvas = Gd::imagecreatetruecolor(40, 30);
+	ok(
+		'imageflip queues a flip',
+		Gd::imageflip($canvas, IMG_FLIP_BOTH) && $canvas->ops === [['op' => 'flip', 'mode' => 3]],
+	);
+	ok(
+		'imageflip rejects an unknown mode',
+		(function () use ($canvas) {
+			try {
+				Gd::imageflip($canvas, 4);
+			} catch (ValueError $e) {
+				return str_contains($e->getMessage(), 'valid flip mode');
+			}
+			return false;
+		})(),
+	);
+
+	$blank = Gd::imagecreatetruecolor(20, 10);
+	ok(
+		'imagefill queues a whole-canvas fill on a blank canvas',
+		Gd::imagefill($blank, 3, 2, 0x336699) &&
+			$blank->ops === [['op' => 'fill', 'x' => 3, 'y' => 2, 'color' => 0x336699]],
+	);
+	ok(
+		'imagefill with a seed outside the image is a true no-op',
+		Gd::imagefill(Gd::imagecreatetruecolor(5, 5), 9, 9, 1),
+	);
+	Degradation::reset();
+	ok(
+		'imagefill refuses an image that holds pixels',
+		Gd::imagefill($base, 0, 0, 1) === false && isset(Degradation::all()['imagefill']),
+	);
+	Degradation::reset();
+	$painted = Gd::imagecreatetruecolor(20, 10);
+	Gd::imagecopy($painted, $base, 0, 0, 0, 0, 5, 5);
+	ok('imagefill refuses a canvas a copy has painted', Gd::imagefill($painted, 0, 0, 1) === false);
+	ok(
+		'imagefill refuses a negative color, which is a tile or style',
+		Gd::imagefill(Gd::imagecreatetruecolor(5, 5), 0, 0, -5) === false,
+	);
+
+	$dst = Gd::imagecreatetruecolor(100, 80);
+	ok('imagecopy queues a copy at an offset', Gd::imagecopy($dst, $base, 7, 5, 3, 2, 30, 20));
+	$op = $dst->ops[0];
+	ok(
+		'the copy carries the offset, the rectangle, the blend flag and the source queue',
+		$op['op'] === 'copy' &&
+			[$op['dx'], $op['dy'], $op['sx'], $op['sy'], $op['width'], $op['height']] === [
+				7,
+				5,
+				3,
+				2,
+				30,
+				20,
+			] &&
+			$op['blend'] === true &&
+			!isset($op['merge']) &&
+			$op['src']['source'] === base64_encode($srcPng),
+	);
+	$noBlend = Gd::imagecreatetruecolor(100, 80);
+	Gd::imagealphablending($noBlend, false);
+	Gd::imagecopy($noBlend, $base, 0, 0, 0, 0, 10, 10);
+	ok(
+		'the copy records the target blend flag at the time of the call',
+		$noBlend->ops[0]['blend'] === false,
+	);
+	$merged = Gd::imagecreatetruecolor(100, 80);
+	Gd::imagecopymerge($merged, $base, 0, 0, 0, 0, 10, 10, 40);
+	ok('imagecopymerge carries the percentage', $merged->ops[0]['merge'] === 40);
+	$zero = Gd::imagecreatetruecolor(100, 80);
+	ok(
+		'imagecopymerge at 0 percent queues nothing',
+		Gd::imagecopymerge($zero, $base, 0, 0, 0, 0, 10, 10, 0) && $zero->ops === [],
+	);
+	Degradation::reset();
+	ok(
+		'imagecopy refuses a source rectangle outside the source',
+		Gd::imagecopy(Gd::imagecreatetruecolor(500, 500), $base, 0, 0, 100, 0, 50, 50) === false &&
+			isset(Degradation::all()['imagecopy']),
+	);
+	Degradation::reset();
+	$gif = Gd::imagecreatefromgif($work . '/q.gif');
+	ok(
+		'imagecopy refuses an indexed target',
+		Gd::imagecopy($gif, $base, 0, 0, 0, 0, 5, 5) === false,
+	);
+	ok(
+		'imagecopy of an empty rectangle is a true no-op',
+		Gd::imagecopy(Gd::imagecreatetruecolor(5, 5), $base, 0, 0, 0, 0, 0, 5),
+	);
+
+	$f = Gd::imagecreatetruecolor(10, 10);
+	foreach (
+		[
+			[IMG_FILTER_NEGATE, []],
+			[IMG_FILTER_GRAYSCALE, []],
+			[IMG_FILTER_BRIGHTNESS, [40]],
+			[IMG_FILTER_CONTRAST, [-30]],
+			[IMG_FILTER_EDGEDETECT, []],
+			[IMG_FILTER_EMBOSS, []],
+			[IMG_FILTER_MEAN_REMOVAL, []],
+			[IMG_FILTER_SMOOTH, [6]],
+		]
+		as [$type, $args]
+	) {
+		ok(
+			"imagefilter queues type $type",
+			Gd::imagefilter($f, $type, ...$args) === true &&
+				end($f->ops)['type'] === $type &&
+				(!$args || end($f->ops)['arg1'] === $args[0]),
+		);
+	}
+	Degradation::reset();
+	ok(
+		'imagefilter refuses a filter outside the eight',
+		Gd::imagefilter($f, IMG_FILTER_PIXELATE, 4, true) === false &&
+			isset(Degradation::all()['imagefilter']),
+	);
+	ok(
+		'imagefilter without its level throws ArgumentCountError',
+		(function () use ($f) {
+			try {
+				Gd::imagefilter($f, IMG_FILTER_BRIGHTNESS);
+			} catch (ArgumentCountError) {
+				return true;
+			}
+			return false;
+		})(),
+	);
+	Degradation::reset();
+	ok('imagefilter refuses an indexed image', Gd::imagefilter($gif, IMG_FILTER_NEGATE) === false);
+
+	$tc = Gd::imagecreatetruecolor(4, 4);
+	$nativeTc = imagecreatetruecolor(4, 4);
+	ok(
+		'imageistruecolor is true for a canvas',
+		Gd::imageistruecolor($tc) === imageistruecolor($nativeTc),
+	);
+	ok(
+		'imagecolorstotal is 0 for true color',
+		Gd::imagecolorstotal($tc) === imagecolorstotal($nativeTc),
+	);
+	ok(
+		'imagecolorallocatealpha packs like native gd on true color',
+		Gd::imagecolorallocatealpha($tc, 12, 34, 56, 78) ===
+			imagecolorallocatealpha($nativeTc, 12, 34, 56, 78),
+	);
+	ok(
+		'imagecolorexactalpha packs like native gd on true color',
+		Gd::imagecolorexactalpha($tc, 1, 2, 3, 4) === imagecolorexactalpha($nativeTc, 1, 2, 3, 4),
+	);
+	ok(
+		'imagecolorsforindex unpacks like native gd on true color',
+		Gd::imagecolorsforindex($tc, 0x40a0b0c0) === imagecolorsforindex($nativeTc, 0x40a0b0c0),
+	);
+	ok(
+		'imagecolorallocate packs like native gd on true color',
+		Gd::imagecolorallocate($tc, 255, 255, 255) ===
+			imagecolorallocate($nativeTc, 255, 255, 255) &&
+			Gd::imagecolorallocate($tc, 1, 2, 3) === imagecolorallocatealpha($nativeTc, 1, 2, 3, 0),
+	);
+	foreach ([[256, 0, 0], [0, -1, 0], [0, 0, 256]] as $bad) {
+		ok(
+			'imagecolorallocate throws what native gd throws for ' . implode(',', $bad),
+			(function () use ($tc, $nativeTc, $bad) {
+				$messages = [];
+				foreach (
+					[
+						fn() => Gd::imagecolorallocate($tc, ...$bad),
+						fn() => imagecolorallocate($nativeTc, ...$bad),
+					]
+					as $call
+				) {
+					try {
+						$call();
+						$messages[] = null;
+					} catch (ValueError $e) {
+						$messages[] = $e->getMessage();
+					}
+				}
+				return $messages[0] !== null && $messages[0] === $messages[1];
+			})(),
+		);
+	}
+	foreach ([[256, 0, 0, 0], [0, -1, 0, 0], [0, 0, 0, 128]] as $bad) {
+		ok(
+			'imagecolorallocatealpha throws what native gd throws for ' . implode(',', $bad),
+			(function () use ($tc, $nativeTc, $bad) {
+				$messages = [];
+				foreach (
+					[
+						fn() => Gd::imagecolorallocatealpha($tc, ...$bad),
+						fn() => imagecolorallocatealpha($nativeTc, ...$bad),
+					]
+					as $call
+				) {
+					try {
+						$call();
+						$messages[] = null;
+					} catch (ValueError $e) {
+						$messages[] = $e->getMessage();
+					}
+				}
+				return $messages[0] !== null && $messages[0] === $messages[1];
+			})(),
+		);
+	}
+	ok(
+		'imagecolortransparent reads -1 and stores a set color',
+		Gd::imagecolortransparent($tc) === -1 &&
+			Gd::imagecolortransparent($tc, 0x123456) === 0x123456 &&
+			Gd::imagecolortransparent($tc) === 0x123456,
+	);
+
+	$nativeGif = imagecreatefromgif($work . '/q.gif');
+	ok(
+		'a GIF handle is indexed, as in native gd',
+		Gd::imageistruecolor($gif) === imageistruecolor($nativeGif) &&
+			Gd::imageistruecolor($gif) === false,
+	);
+	ok(
+		'its color count is the highest index a pixel uses, as native gd reports',
+		Gd::imagecolorstotal($gif) === imagecolorstotal($nativeGif),
+	);
+	ok(
+		'its first color reads back like native gd',
+		Gd::imagecolorsforindex($gif, 0) === imagecolorsforindex($nativeGif, 0),
+	);
+	ok(
+		'its transparent index is native gd\'s',
+		Gd::imagecolortransparent($gif) === imagecolortransparent($nativeGif),
+	);
+	$before = Gd::imagecolorstotal($gif);
+	$slot = Gd::imagecolorallocatealpha($gif, 1, 2, 3, 4);
+	$nativeSlot = imagecolorallocatealpha($nativeGif, 1, 2, 3, 4);
+	ok(
+		'allocating into an indexed handle takes the slot native gd takes',
+		$slot === $nativeSlot &&
+			Gd::imagecolorstotal($gif) === imagecolorstotal($nativeGif) &&
+			$before >= 0,
+	);
+	$nativeGif2 = imagecreatefromgif($work . '/q.gif');
+	$gif2 = Gd::imagecreatefromgif($work . '/q.gif');
+	ok(
+		'imagecolorallocate on an indexed handle takes the slot native gd takes',
+		Gd::imagecolorallocate($gif2, 9, 8, 7) === imagecolorallocate($nativeGif2, 9, 8, 7) &&
+			Gd::imagecolorstotal($gif2) === imagecolorstotal($nativeGif2),
+	);
+	ok(
+		'imagecolorexactalpha finds it',
+		Gd::imagecolorexactalpha($gif, 1, 2, 3, 4) === imagecolorexactalpha($nativeGif, 1, 2, 3, 4),
+	);
+	ok(
+		'an index outside the table throws like native gd',
+		(function () use ($gif) {
+			try {
+				Gd::imagecolorsforindex($gif, 9999);
+			} catch (ValueError $e) {
+				return $e->getMessage() ===
+					'imagecolorsforindex(): Argument #2 ($color) is out of range';
+			}
+			return false;
+		})(),
+	);
+	$toPalette = Gd::imagecreatetruecolor(4, 4);
+	Degradation::reset();
+	ok(
+		'imagetruecolortopalette returns true and flips imageistruecolor',
+		Gd::imagetruecolortopalette($toPalette, false, 16) === true &&
+			Gd::imageistruecolor($toPalette) === false,
+	);
+	ok('the quantizer result is not invented', Gd::imagecolorstotal($toPalette) === false);
+	ok(
+		'imagetruecolortopalette on an indexed handle changes nothing',
+		Gd::imagetruecolortopalette($gif, false, 8) === true &&
+			Gd::imageistruecolor($gif) === false,
+	);
+
+	ok(
+		'imageinterlace reads, sets and reads',
+		(function () {
+			$i = Gd::imagecreatetruecolor(2, 2);
+			return Gd::imageinterlace($i) === false &&
+				Gd::imageinterlace($i, true) === true &&
+				Gd::imageinterlace($i) === true;
+		})(),
+	);
+	ok(
+		'imageantialias answers true on true color and indexed handles',
+		Gd::imageantialias($tc, true) === true && Gd::imageantialias($gif, true) === true,
+	);
+
+	if (function_exists('imagecreatefromavif') && function_exists('imageavif')) {
+		ob_start();
+		imageavif($native, null, 60);
+		file_put_contents($work . '/q.avif', (string) ob_get_clean());
+		$avif = Gd::imagecreatefromavif($work . '/q.avif');
+		ok(
+			'imagecreatefromavif keeps the encoded bytes and the size',
+			$avif instanceof StandinGdImage && $avif->width === 120 && $avif->height === 80,
+		);
+		ok(
+			'imagecreatefromavif returns false for another format',
+			Gd::imagecreatefromavif($work . '/q.png') === false,
+		);
+		ok(
+			'imagecreatefrompng returns false for an AVIF file',
+			Gd::imagecreatefrompng($work . '/q.avif') === false,
+		);
+		$sent = [];
+		Park::useDriver(function (string $target) use (&$sent) {
+			$sent[] = json_decode(
+				(string) base64_decode(substr($target, strlen(Gd::SCHEME))),
+				true,
+			);
+			return json_encode(['bytes' => base64_encode('avif-bytes')]);
+		});
+		install_host(['cfwParkImage' => true]);
+		Gd::imageavif($avif, $work . '/out.avif');
+		ok(
+			'imageavif parks with format avif and gd\'s default quality of 52',
+			end($sent)['format'] === 'avif' && end($sent)['quality'] === 52,
+		);
+		Gd::imageavif($avif, $work . '/out.avif', 70, 4);
+		ok('imageavif passes an explicit quality through', end($sent)['quality'] === 70);
+		Gd::imageinterlace($avif, true);
+		Gd::imagejpeg($avif, $work . '/out.jpg');
+		ok(
+			'a handle asked to interlace parks with progressive set',
+			end($sent)['progressive'] === true,
+		);
+		Degradation::reset();
+		Gd::imagepng($avif, $work . '/out.png');
+		ok(
+			'an interlaced PNG records that the host cannot interlace it',
+			isset(Degradation::all()['gd interlace']),
+		);
+		Park::useDriver(null);
+		install_host([]);
+	}
+
+	$rot = Gd::imagerotate($base, 37.0, 0);
+	ok(
+		'an angled rotation tells the host the extent PHP reports',
+		end($rot->ops)['width'] === $rot->width && end($rot->ops)['height'] === $rot->height,
+	);
+
+	$rotGif = Gd::imagerotate($gif, 37.0, 0);
+	$nativeRotGif = imagerotate($nativeGif, 37, 0);
+	$entry = imagecolorsforindex($nativeGif, 0);
+	ok(
+		'a rotated indexed handle is true color with no table, as native gd returns it',
+		$rotGif->trueColor === imageistruecolor($nativeRotGif) &&
+			Gd::imagecolorstotal($rotGif) === imagecolorstotal($nativeRotGif),
+	);
+	ok(
+		'a rotation background index on an indexed handle is read from the table, as gd does',
+		(end($rotGif->ops)['background'] === $entry['alpha'] << 24) |
+			($entry['red'] << 16) |
+			($entry['green'] << 8) |
+			$entry['blue'],
+	);
+	ok(
+		'an angle of 0 leaves an indexed handle indexed, as native gd does',
+		Gd::imageistruecolor(Gd::imagerotate($gif, 0.0, 0)) === false &&
+			imageistruecolor(imagerotate($nativeGif, 0, 0)) === false,
+	);
+	ok(
+		'a negative rotation background answers false, as native gd does',
+		Gd::imagerotate($gif, 37.0, -1) === false && @imagerotate($nativeGif, 37, -1) === false,
+	);
+
+	StandinGdImage::declareAs('GdImageAliasProbe');
+	ok(
+		'a handle satisfies instanceof and a type hint on the global name once it is declared',
+		Gd::imagecreatetruecolor(1, 1) instanceof GdImageAliasProbe &&
+			(fn(GdImageAliasProbe $i) => true)(Gd::imagecreatetruecolor(1, 1)),
+	);
+	StandinGdImage::declareAs('GdImageAliasProbe');
+	ok('declaring the name twice is harmless', class_exists('GdImageAliasProbe', false));
+
+	$gifSent = [];
+	Park::useDriver(function (string $target) use (&$gifSent) {
+		$gifSent[] = json_decode((string) base64_decode(substr($target, strlen(Gd::SCHEME))), true);
+		return json_encode(['bytes' => base64_encode('gif-bytes')]);
+	});
+	install_host(['cfwParkImage' => true]);
+	$gifCanvas = Gd::imagecreatetruecolor(4, 4);
+	Gd::imagegif($gifCanvas, $work . '/o.gif');
+	ok(
+		'a true color handle parks a GIF with no transparent color, as libgd drops its alpha',
+		array_key_exists('transparent', end($gifSent)) && end($gifSent)['transparent'] === null,
+	);
+	Gd::imagecolortransparent($gifCanvas, 0x7f112233);
+	Gd::imagegif($gifCanvas, $work . '/o.gif');
+	ok(
+		'a true color handle with a transparent color parks it for the GIF',
+		end($gifSent)['transparent'] === 0x7f112233,
+	);
+	Gd::imagegif($gif, $work . '/o.gif');
+	ok(
+		'an indexed handle parks a GIF that keeps its own transparency',
+		!array_key_exists('transparent', end($gifSent)),
+	);
+	Park::useDriver(null);
+	install_host([]);
+
+	$gd2Sent = [];
+	Park::useDriver(function (string $target) use (&$gd2Sent) {
+		$gd2Sent[] = json_decode((string) base64_decode(substr($target, strlen(Gd::SCHEME))), true);
+		return json_encode(['bytes' => base64_encode('gd2-bytes')]);
+	});
+	install_host(['cfwParkImage' => true]);
+	$gd2Canvas = Gd::imagecreatetruecolor(4, 4);
+	ok(
+		'imagegd2 writes the host bytes to a path',
+		Gd::imagegd2($gd2Canvas, $work . '/o.gd2') === true &&
+			file_get_contents($work . '/o.gd2') === 'gd2-bytes',
+	);
+	ok(
+		'imagegd2 parks format gd2 with the defaults of PHP 8: chunk 128, raw',
+		end($gd2Sent)['format'] === 'gd2' &&
+			end($gd2Sent)['gd2'] === ['chunk' => 128, 'mode' => 1] &&
+			end($gd2Sent)['transparent'] === -1,
+	);
+	Gd::imagegd2($gd2Canvas, $work . '/o.gd2', -1, IMG_GD2_COMPRESSED);
+	ok(
+		'a chunk size of -1 is 128 and the mode passes through',
+		end($gd2Sent)['gd2'] === ['chunk' => 128, 'mode' => 2],
+	);
+	Gd::imagegd2($gd2Canvas, $work . '/o.gd2', 100, 7);
+	ok(
+		'an explicit chunk size and an unknown mode reach the host unchanged',
+		end($gd2Sent)['gd2'] === ['chunk' => 100, 'mode' => 7],
+	);
+	ok(
+		'a chunk size past the C int answers false without a host call',
+		count($gd2Sent) === 3 &&
+			Gd::imagegd2($gd2Canvas, null, 2 ** 31) === false &&
+			count($gd2Sent) === 3,
+	);
+	Degradation::reset();
+	ok(
+		'an indexed handle answers false and records why',
+		Gd::imagegd2($gif, $work . '/o.gd2') === false &&
+			isset(Degradation::all()['imagegd2']) &&
+			count($gd2Sent) === 3,
+	);
+	$chainA = Gd::imagecreatetruecolor(60, 40);
+	Gd::imagefill($chainA, 0, 0, 0x00ffffff);
+	Gd::imagecopyresampled($chainA, $base, 0, 0, 0, 0, 60, 40, $base->width, $base->height);
+	$chainB = Gd::imagecreatetruecolor(60, 40);
+	Gd::imagefill($chainB, 0, 0, 0x00ffffff);
+	ok(
+		'a painted canvas is a copy source, as GDToolkit converts after it resizes',
+		Gd::imagecopyresampled($chainB, $chainA, 0, 0, 0, 0, 60, 40, 60, 40) === true &&
+			end($chainB->ops)['src']['source'] === null &&
+			end($chainB->ops)['src']['canvas'] === ['width' => 60, 'height' => 40],
+	);
+	$turned = Gd::imagerotate($chainA, 90.0, 0);
+	Gd::imagepng($turned, $work . '/o.png');
+	ok(
+		'a painted canvas rotates, and the request keeps the canvas it started as',
+		$turned instanceof StandinGdImage &&
+			[$turned->width, $turned->height] === [40, 60] &&
+			end($gd2Sent)['canvas'] === ['width' => 60, 'height' => 40],
+	);
+	Degradation::reset();
+	ok(
+		'an unpainted canvas is still no copy source',
+		Gd::imagecopyresampled(
+			Gd::imagecreatetruecolor(5, 5),
+			Gd::imagecreatetruecolor(5, 5),
+			0,
+			0,
+			0,
+			0,
+			5,
+			5,
+			5,
+			5,
+		) === false && isset(Degradation::all()['imagecopyresampled']),
+	);
+	ok(
+		'GD2 constants match native gd',
+		IMG_GD2_RAW === Gd::CONSTANTS['IMG_GD2_RAW'] &&
+			IMG_GD2_COMPRESSED === Gd::CONSTANTS['IMG_GD2_COMPRESSED'],
+	);
+	Park::useDriver(null);
+	install_host([]);
+
+	$alphaDst = Gd::imagecreatetruecolor(60, 40);
+	Gd::imagecopyresampled(
+		$alphaDst,
+		Gd::imagecreatefromstring($alphaPng),
+		0,
+		0,
+		0,
+		0,
+		60,
+		40,
+		imagesx(imagecreatefromstring($alphaPng)),
+		imagesy(imagecreatefromstring($alphaPng)),
+	);
+	ok(
+		'a blended resample of a source with alpha goes over the canvas instead of replacing it',
+		$alphaDst->ops[0]['op'] === 'copy',
 	);
 }
 // #endregion

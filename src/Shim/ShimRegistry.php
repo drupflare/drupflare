@@ -391,6 +391,7 @@ final class ShimRegistry
 			'imagecreatefrompng' => 'Reads the file and keeps the encoded bytes.',
 			'imagecreatefromwebp' => 'Reads the file and keeps the encoded bytes.',
 			'imagecreatefromgif' => 'Reads the file and keeps the encoded bytes.',
+			'imagecreatefromavif' => 'Reads the file and keeps the encoded bytes.',
 			'imagecreatetruecolor' =>
 				'A blank canvas of the given size; a copy onto all of it fills it.',
 			'imagesx' => 'Reads the tracked width.',
@@ -410,6 +411,35 @@ final class ShimRegistry
 			'imagepng' => 'Parks on cfwpark+image:// and the host encodes.',
 			'imagewebp' => 'Parks on cfwpark+image:// and the host encodes.',
 			'imagegif' => 'Parks on cfwpark+image:// and the host encodes.',
+			'imageavif' => 'Parks on cfwpark+image:// and the host encodes.',
+			'imagegd2' =>
+				'Parks on cfwpark+image:// and the host writes a true color GD2; an indexed handle is refused.',
+			'imagecopy' =>
+				'Queues a copy of a region at an offset; the host blends it with libgd\'s integer formula.',
+			'imagecopymerge' =>
+				'Queues a percentage merge of a region at an offset, with libgd\'s truncation.',
+			'imagefill' =>
+				'Queues a fill of a blank canvas; any image that has been painted needs pixels and is refused.',
+			'imageflip' => 'Queues a horizontal, vertical or both-way mirror.',
+			'imagefilter' =>
+				'Queues negate, grayscale, brightness, contrast, edge detect, emboss, mean removal or smooth; another filter is refused.',
+			'imagecolorallocatealpha' =>
+				'A packed integer on a true color handle; a table entry on an indexed one.',
+			'imagecolorallocate' => 'As imagecolorallocatealpha(), with an alpha of 0.',
+			'imagecolorsforindex' =>
+				'Answered from the color table or the packed integer, with no host call.',
+			'imagecolorstotal' => 'The size of the handle\'s color table, 0 for true color.',
+			'imagecolorexactalpha' =>
+				'The packed integer, or a search of the handle\'s color table.',
+			'imagecolortransparent' => 'Read and set on the handle.',
+			'imageistruecolor' => 'False for a GIF or palette PNG source, as gd loads them.',
+			'imagetruecolortopalette' =>
+				'Marks the handle indexed; the host writes the container the caller asks for.',
+			'imageinterlace' => 'Stored on the handle and passed to the encoder as progressive.',
+			'imageantialias' => 'Stored on the handle; no operation the queue carries reads it.',
+			'imagetypes' =>
+				'The formats the host can read and write: GIF, JPEG, PNG, WebP and AVIF.',
+			'gd_info' => 'Reports only the formats the host can read and write.',
 		];
 		$rows = [];
 		foreach ($routed as $name => $why) {
@@ -420,18 +450,7 @@ final class ShimRegistry
 				'alternative' => '',
 			];
 		}
-		foreach (
-			[
-				'imagesetpixel',
-				'imagecolorallocate',
-				'imagecolorat',
-				'imagefilledrectangle',
-				'imagefill',
-				'imagecopy',
-				'imagecopymerge',
-			]
-			as $name
-		) {
+		foreach (['imagesetpixel', 'imagecolorat', 'imagefilledrectangle'] as $name) {
 			$rows[$name] = [
 				'verdict' => self::REFUSE,
 				'via' => '',

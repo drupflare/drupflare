@@ -31,11 +31,12 @@ that go through it.
 
 ## 🎯 Why Bindings
 
-A Worker has no sockets, no `gd`, no SMTP transport and no writable disk worth using. PHP compiled to
+A Worker has no sockets, no native `gd`, no SMTP transport and no writable disk worth using. PHP compiled to
 WebAssembly arrives missing what Drupal assumes, and compiling those libraries back in costs both
 bundle and memory: `gd` alone adds 684,821 bytes, and image decoding in PHP runs inside the Durable
 Object's 128 MiB isolate. Decoding happens in the front Worker instead, through Cloudflare Images
-and `tinyimg`, where the isolate is not on the hook for it.
+and `tinyimg`, where the isolate is not on the hook for it. PHP's `gd` functions are a shim that
+queues operations for that Worker to run.
 
 The platform already provides all of it. Cloudflare has an email binding, `fetch()`, Cloudflare
 Images and Workers Logs. Drupal's mail system, image toolkit, HTTP transport and logger are
@@ -353,9 +354,14 @@ Properties of the runtime.
   the line itself and refuses pipes, redirects, `&`, `;`, substitution and globs with a named
   reason. Programs outside the table fail as a failed launch (`false`, exit 127) and record a
   degradation.
-- **`gd` is a queue of crop, resize and rotate operations.** A copy onto anything but a fresh
-  canvas, a crop outside the image and every per-pixel function are refused or undefined, and
-  `extension_loaded('gd')` stays false.
+- **`gd` is 40 functions that queue operations.** They are the ones the WordPress, Joomla and Drupal
+  image paths call: copy, merge, fill, flip, eight filters, a color table, and JPEG, PNG, GIF, WebP
+  and AVIF in and out. The host runs the queue through `tinyimg`. `imagecolorat()`, the drawing
+  functions and text are undefined, a fill or copy that needs pixels is refused, `imageavif()`
+  returns false for an image with alpha, and `imageinterlace()` cannot interlace a PNG or GIF.
+  `extension_loaded('gd')` is true, held by `tests/gd-differential.php` against native gd.
+  `imagegd2()` is defined, so Drupal's `GDToolkit` is selectable; `cfw_images` stays the default and GD builds
+  every derivative at save time (measured notes: `worker/docs/configuration/serving/files-and-images.md`).
 - **symfony_mailer needs a `cfwmail://default` DSN.** The transport sends text and html and
   refuses a message with attachments.
 - **`config:import` runs in beats.** `cim` runs up to ten operations per call and reports what is
