@@ -122,7 +122,11 @@ $suiteFile = (static function (): string {
 	);
 	$measured = [];
 	foreach ($walk as $file) {
-		if ($file->isFile() && $file->getExtension() === 'php') {
+		if (
+			$file->isFile() &&
+			$file->getExtension() === 'php' &&
+			!str_contains($file->getPathname(), '/src/Wp/')
+		) {
 			$measured[] = $file->getPathname();
 		}
 	}

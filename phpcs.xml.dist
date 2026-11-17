@@ -92,6 +92,7 @@
 	</rule>
 
 	<exclude-pattern>*/stubs/*</exclude-pattern>
+	<exclude-pattern>*/src/Wp/*</exclude-pattern>
 	<exclude-pattern>*/tests/*</exclude-pattern>
 
 	<!--

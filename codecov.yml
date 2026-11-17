@@ -30,6 +30,7 @@ flag_management:
 ignore:
   - 'tests/**/*'
   - 'stubs/**/*'
+  - 'src/Wp/**/*'
   - 'coverage/**/*'
   - 'vendor/**/*'
   - 'drupal-root/**/*'

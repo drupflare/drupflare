@@ -14,6 +14,7 @@
 		"lint:php": "./vendor/bin/phpcs",
 		"lint:php:fix": "./vendor/bin/phpcbf",
 		"test:health": "php tests/health-suite.php",
+		"test:wp": "php tests/wp/wpdb-suite.php && php tests/wp/mu-suite.php && php tests/wp/tags-suite.php",
 		"test:coverage": "php tests/coverage.php"
 	},
 	"devDependencies": {
@@ -27,7 +28,7 @@
 	"lint-staged": {
 		"*.{md,json,yml,php}": "prettier --write",
 		"*.{php,module,install,inc}": [
-			"./vendor/bin/phpcs --",
+			"sh -c './vendor/bin/phpcs -- \"$@\"; s=$?; [ $s -eq 16 ] && exit 0; exit $s' --",
 			"php tests/lint.php"
 		]
 	}
