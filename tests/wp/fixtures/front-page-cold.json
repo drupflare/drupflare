@@ -1,0 +1,443 @@
+{
+	"session": [
+		"SET NAMES utf8mb4",
+		"SET NAMES 'utf8mb4' COLLATE 'utf8mb4_unicode_520_ci'",
+		"SELECT @@SESSION.sql_mode",
+		"SET SESSION sql_mode='NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'"
+	],
+	"steps": [
+		{
+			"sql": "SELECT option_name, option_value FROM wp_options WHERE autoload IN ( 'yes', 'on', 'auto-on', 'auto' )",
+			"call": "get_results",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["option_name", "option_value"],
+				"rows": [
+					["siteurl", "http://localhost:18080"],
+					["blogname", "Rig"],
+					["posts_per_page", "10"]
+				]
+			}
+		},
+		{
+			"sql": "SELECT option_value FROM wp_options WHERE option_name = 'WPLANG' LIMIT 1",
+			"call": "get_row",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["option_value"],
+				"rows": []
+			}
+		},
+		{
+			"sql": "SELECT option_name, option_value FROM wp_options WHERE option_name IN ('_site_transient_wp_theme_files_patterns-b24c4b64a1fe6f9f73313f730ddfc1cf','_site_transient_timeout_wp_theme_files_patterns-b24c4b64a1fe6f9f73313f730ddfc1cf')",
+			"call": "get_results",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["option_name", "option_value"],
+				"rows": []
+			}
+		},
+		{
+			"sql": "SELECT option_value FROM wp_options WHERE option_name = 'theme_switched' LIMIT 1",
+			"call": "get_row",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["option_value"],
+				"rows": []
+			}
+		},
+		{
+			"sql": "SELECT SQL_CALC_FOUND_ROWS  wp_posts.ID\n\t\t\t\t\t FROM wp_posts \n\t\t\t\t\t WHERE 1=1  AND ((wp_posts.post_type = 'post' AND (wp_posts.post_status = 'publish')))\n\t\t\t\t\t \n\t\t\t\t\t ORDER BY wp_posts.post_date DESC\n\t\t\t\t\t LIMIT 0, 10",
+			"call": "get_col",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["ID"],
+				"rows": [[1]]
+			}
+		},
+		{
+			"sql": "SELECT FOUND_ROWS()",
+			"call": "get_var",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["FOUND_ROWS()"],
+				"rows": [[1]]
+			}
+		},
+		{
+			"sql": "SELECT wp_posts.* FROM wp_posts WHERE ID IN (1)",
+			"call": "get_results",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": [
+					"ID",
+					"post_author",
+					"post_date",
+					"post_date_gmt",
+					"post_content",
+					"post_title",
+					"post_excerpt",
+					"post_status",
+					"comment_status",
+					"ping_status",
+					"post_password",
+					"post_name",
+					"to_ping",
+					"pinged",
+					"post_modified",
+					"post_modified_gmt",
+					"post_content_filtered",
+					"post_parent",
+					"guid",
+					"menu_order",
+					"post_type",
+					"post_mime_type",
+					"comment_count"
+				],
+				"rows": [
+					[
+						1,
+						1,
+						"2026-11-16 22:20:00",
+						"2026-11-16 22:20:00",
+						"Welcome to WordPress.\n\nIt's \"quoted\" \\ backslash.",
+						"Hello world!",
+						"",
+						"publish",
+						"open",
+						"open",
+						"",
+						"hello-world",
+						"",
+						"",
+						"2026-11-16 22:20:00",
+						"2026-11-16 22:20:00",
+						"",
+						0,
+						"http://localhost:18080/?p=1",
+						0,
+						"post",
+						"",
+						0
+					]
+				]
+			}
+		},
+		{
+			"sql": "SELECT post_id, meta_key, meta_value FROM wp_postmeta WHERE post_id IN (1) ORDER BY meta_id ASC",
+			"call": "get_results",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["post_id", "meta_key", "meta_value"],
+				"rows": [[1, "_edit_lock", "1794889771:1"]]
+			},
+			"output": "ARRAY_A"
+		},
+		{
+			"sql": "SELECT DISTINCT t.term_id, tr.object_id\n\t\t\t FROM wp_terms AS t  INNER JOIN wp_term_taxonomy AS tt ON t.term_id = tt.term_id INNER JOIN wp_term_relationships AS tr ON tr.term_taxonomy_id = tt.term_taxonomy_id\n\t\t\t WHERE tt.taxonomy IN ('category', 'post_tag', 'post_format') AND tr.object_id IN (1)\n\t\t\t ORDER BY t.name ASC",
+			"call": "get_results",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["term_id", "object_id"],
+				"rows": [[1, 1]]
+			}
+		},
+		{
+			"sql": "SELECT t.*, tt.* FROM wp_terms AS t INNER JOIN wp_term_taxonomy AS tt ON t.term_id = tt.term_id WHERE t.term_id IN (1)",
+			"call": "get_results",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": [
+					"term_id",
+					"name",
+					"slug",
+					"term_group",
+					"term_id",
+					"taxonomy",
+					"description",
+					"parent",
+					"count"
+				],
+				"rows": [[1, "Uncategorized", "uncategorized", 0, 1, "category", "", 0, 1]]
+			}
+		},
+		{
+			"sql": "SELECT  t.term_id\n\t\t\t FROM wp_terms AS t  INNER JOIN wp_term_taxonomy AS tt ON t.term_id = tt.term_id\n\t\t\t WHERE tt.taxonomy IN ('wp_theme') AND t.name IN ('twentytwentyfive')\n\t\t\t \n\t\t\t LIMIT 1",
+			"call": "get_col",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["term_id"],
+				"rows": []
+			}
+		},
+		{
+			"sql": "SELECT   wp_posts.ID\n\t\t\t\t\t FROM wp_posts \n\t\t\t\t\t WHERE 1=1  AND wp_posts.post_name IN ('front-page') AND ( \n  0 = 1\n) AND wp_posts.post_type = 'wp_template' AND ((wp_posts.post_status = 'publish'))\n\t\t\t\t\t GROUP BY wp_posts.ID\n\t\t\t\t\t ORDER BY wp_posts.post_date DESC\n\t\t\t\t\t LIMIT 0, 1",
+			"call": "get_col",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["ID"],
+				"rows": []
+			}
+		},
+		{
+			"sql": "SELECT   wp_posts.ID\n\t\t\t\t\t FROM wp_posts \n\t\t\t\t\t WHERE 1=1  AND wp_posts.post_name IN ('home','index') AND ( \n  0 = 1\n) AND wp_posts.post_type = 'wp_template' AND ((wp_posts.post_status = 'publish'))\n\t\t\t\t\t GROUP BY wp_posts.ID\n\t\t\t\t\t ORDER BY wp_posts.post_date DESC\n\t\t\t\t\t LIMIT 0, 2",
+			"call": "get_col",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["ID"],
+				"rows": []
+			}
+		},
+		{
+			"sql": "SELECT option_value FROM wp_options WHERE option_name = 'can_compress_scripts' LIMIT 1",
+			"call": "get_row",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["option_value"],
+				"rows": [["1"]]
+			}
+		},
+		{
+			"sql": "SELECT   wp_posts.ID\n\t\t\t\t\t FROM wp_posts \n\t\t\t\t\t WHERE 1=1  AND wp_posts.post_name IN ('header') AND ( \n  0 = 1\n) AND wp_posts.post_type = 'wp_template_part' AND ((wp_posts.post_status = 'publish'))\n\t\t\t\t\t GROUP BY wp_posts.ID\n\t\t\t\t\t ORDER BY wp_posts.post_date DESC\n\t\t\t\t\t LIMIT 0, 1",
+			"call": "get_col",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["ID"],
+				"rows": []
+			}
+		},
+		{
+			"sql": "SELECT   wp_posts.ID\n\t\t\t\t\t FROM wp_posts \n\t\t\t\t\t WHERE 1=1  AND wp_posts.post_type = 'wp_navigation' AND ((wp_posts.post_status = 'publish'))\n\t\t\t\t\t \n\t\t\t\t\t ORDER BY wp_posts.post_date DESC\n\t\t\t\t\t LIMIT 0, 1",
+			"call": "get_col",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["ID"],
+				"rows": [[4]]
+			}
+		},
+		{
+			"sql": "SELECT wp_posts.* FROM wp_posts WHERE ID IN (4)",
+			"call": "get_results",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": [
+					"ID",
+					"post_author",
+					"post_date",
+					"post_date_gmt",
+					"post_content",
+					"post_title",
+					"post_excerpt",
+					"post_status",
+					"comment_status",
+					"ping_status",
+					"post_password",
+					"post_name",
+					"to_ping",
+					"pinged",
+					"post_modified",
+					"post_modified_gmt",
+					"post_content_filtered",
+					"post_parent",
+					"guid",
+					"menu_order",
+					"post_type",
+					"post_mime_type",
+					"comment_count"
+				],
+				"rows": [
+					[
+						4,
+						1,
+						"2026-11-16 22:20:00",
+						"2026-11-16 22:20:00",
+						"<!-- wp:page-list /-->",
+						"Navigation",
+						"",
+						"publish",
+						"open",
+						"open",
+						"",
+						"navigation",
+						"",
+						"",
+						"2026-11-16 22:20:00",
+						"2026-11-16 22:20:00",
+						"",
+						0,
+						"http://localhost:18080/?p=4",
+						0,
+						"wp_navigation",
+						"",
+						0
+					]
+				]
+			}
+		},
+		{
+			"sql": "SELECT post_id, meta_key, meta_value FROM wp_postmeta WHERE post_id IN (4) ORDER BY meta_id ASC",
+			"call": "get_results",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["post_id", "meta_key", "meta_value"],
+				"rows": []
+			},
+			"output": "ARRAY_A"
+		},
+		{
+			"sql": "SELECT   wp_posts.*\n\t\t\t\t\t FROM wp_posts \n\t\t\t\t\t WHERE 1=1  AND wp_posts.post_type = 'page' AND ((wp_posts.post_status = 'publish'))\n\t\t\t\t\t \n\t\t\t\t\t ORDER BY wp_posts.menu_order ASC, wp_posts.post_title ASC",
+			"call": "get_results",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": [
+					"ID",
+					"post_author",
+					"post_date",
+					"post_date_gmt",
+					"post_content",
+					"post_title",
+					"post_excerpt",
+					"post_status",
+					"comment_status",
+					"ping_status",
+					"post_password",
+					"post_name",
+					"to_ping",
+					"pinged",
+					"post_modified",
+					"post_modified_gmt",
+					"post_content_filtered",
+					"post_parent",
+					"guid",
+					"menu_order",
+					"post_type",
+					"post_mime_type",
+					"comment_count"
+				],
+				"rows": [
+					[
+						2,
+						1,
+						"2026-11-16 22:20:00",
+						"2026-11-16 22:20:00",
+						"This is a page.",
+						"Sample Page",
+						"",
+						"publish",
+						"open",
+						"open",
+						"",
+						"sample-page",
+						"",
+						"",
+						"2026-11-16 22:20:00",
+						"2026-11-16 22:20:00",
+						"",
+						0,
+						"http://localhost:18080/?p=2",
+						0,
+						"page",
+						"",
+						0
+					]
+				]
+			},
+			"output": "OBJECT_K"
+		},
+		{
+			"sql": "SELECT   wp_posts.ID\n\t\t\t\t\t FROM wp_posts \n\t\t\t\t\t WHERE 1=1  AND ( \n  0 = 1\n) AND wp_posts.post_type = 'wp_global_styles' AND ((wp_posts.post_status = 'publish'))\n\t\t\t\t\t GROUP BY wp_posts.ID\n\t\t\t\t\t ORDER BY wp_posts.post_date DESC\n\t\t\t\t\t LIMIT 0, 1",
+			"call": "get_col",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["ID"],
+				"rows": []
+			}
+		},
+		{
+			"sql": "SELECT user_id, meta_key, meta_value FROM wp_usermeta WHERE user_id IN (1) ORDER BY umeta_id ASC",
+			"call": "get_results",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["user_id", "meta_key", "meta_value"],
+				"rows": [
+					[1, "nickname", "admin"],
+					[1, "rich_editing", "true"]
+				]
+			},
+			"output": "ARRAY_N"
+		},
+		{
+			"sql": "SELECT * FROM wp_users WHERE ID IN (1)",
+			"call": "get_results",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": [
+					"ID",
+					"user_login",
+					"user_nicename",
+					"user_email",
+					"user_url",
+					"user_registered",
+					"user_activation_key",
+					"user_status",
+					"display_name"
+				],
+				"rows": [
+					[
+						1,
+						"admin",
+						"admin",
+						"admin@example.invalid",
+						"",
+						"2026-11-16 22:19:00",
+						"",
+						0,
+						"admin"
+					]
+				]
+			}
+		},
+		{
+			"sql": "SELECT   wp_posts.ID\n\t\t\t\t\t FROM wp_posts \n\t\t\t\t\t WHERE 1=1  AND wp_posts.post_name IN ('footer') AND ( \n  0 = 1\n) AND wp_posts.post_type = 'wp_template_part' AND ((wp_posts.post_status = 'publish'))\n\t\t\t\t\t GROUP BY wp_posts.ID\n\t\t\t\t\t ORDER BY wp_posts.post_date DESC\n\t\t\t\t\t LIMIT 0, 1",
+			"call": "get_col",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["ID"],
+				"rows": []
+			}
+		},
+		{
+			"sql": "SELECT option_value FROM wp_options WHERE option_name = 'site_logo' LIMIT 1",
+			"call": "get_row",
+			"reply": {
+				"ok": true,
+				"kind": "rows",
+				"columns": ["option_value"],
+				"rows": []
+			}
+		}
+	]
+}
