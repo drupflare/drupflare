@@ -5396,7 +5396,7 @@ ok(
 	isset($schema['indexes']['pattern_outline_parts']),
 );
 // #endregion
-// #region P45 -- a capability is SHIMMED, ACCOMMODATED or DECLARED, never silently absent
+// #region a capability is SHIMMED, ACCOMMODATED or DECLARED, never silently absent
 echo "\n# Degradation -- the declared-degradation contract\n";
 
 Degradation::reset();
@@ -5503,7 +5503,7 @@ ok(
 );
 // #endregion
 
-// #region P18: the operations terminal's parser
+// #region the operations terminal's parser
 $parsed = CommandLine::parse('en pathauto token');
 ok('a plain operation parses', $parsed['ok'] === true && $parsed['op'] === 'en');
 ok('and is an operation rather than a package', $parsed['kind'] === 'operation');

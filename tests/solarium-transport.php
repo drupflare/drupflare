@@ -195,7 +195,7 @@ ok(
 ok('and no response was set', $missed->getResponse() === null);
 // #endregion
 
-// #region credentials reach the wire, which is what P46 made possible
+// #region credentials reach the wire
 host_answers(['ok' => true, 'status' => 200, 'headers' => [], 'body' => '{}'], $seen);
 $transport->onPreExecuteRequest(event_for(['username' => 'solr', 'password' => 'SolrRocks']));
 $sentAuth = $seen['headers']['Authorization'] ?? '';
