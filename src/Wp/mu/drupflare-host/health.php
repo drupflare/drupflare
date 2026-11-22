@@ -26,14 +26,12 @@ function drupflare_host_test_notes(): array
 		'This test looks for a caching plugin or drop-in inside WordPress. Caching on drupflare is handled by the host, where the test cannot see it, so its result would not describe this site.';
 	$updates =
 		'On drupflare, updates to WordPress, plugins and themes are host operations. WordPress is not allowed to change its own files (DISALLOW_FILE_MODS is on), so this test does not apply.';
-	$self =
-		'This site cannot send requests to itself on drupflare, so Site Health cannot run this check from the server. Your browser reaches the site normally, and if wp-admin loads and saves, this part is working.';
-
 	return [
 		'persistent_object_cache' => [
 			'badge' => 'Performance',
-			'label' => 'The object cache is managed by the host',
-			'description' => $cache,
+			'label' => 'The object cache lasts one request',
+			'description' =>
+				'WordPress keeps its default object cache, which lasts one request, and no persistent object cache drop-in is installed on drupflare. This test looks for one, so its usual recommendation does not describe a fault here.',
 		],
 		'page_cache' => [
 			'badge' => 'Performance',
@@ -71,16 +69,6 @@ function drupflare_host_test_notes(): array
 			'label' => 'Scheduled events are run by the platform',
 			'description' =>
 				'WordPress cron is driven by the platform rather than by visitors (DISABLE_WP_CRON is on), so the usual check of overdue events does not describe this site.',
-		],
-		'rest_availability' => [
-			'badge' => 'Performance',
-			'label' => 'The REST API cannot be tested from the server',
-			'description' => $self,
-		],
-		'loopback_requests' => [
-			'badge' => 'Performance',
-			'label' => 'Loopback requests cannot be tested from the server',
-			'description' => $self,
 		],
 		'sql_server' => [
 			'badge' => 'Performance',
@@ -198,6 +186,26 @@ function drupflare_host_debug_information($info)
 			'php_version' => [
 				'label' => 'PHP version',
 				'value' => PHP_VERSION,
+			],
+			'outbound_requests' => [
+				'label' => 'Outbound requests',
+				'value' => drupflare_http_available()
+					? sprintf(
+						'available; %d of %d spent by this request',
+						drupflare_http_state()['spent'],
+						drupflare_http_budget(),
+					)
+					: 'not available in this deployment',
+			],
+			'image_editor' => [
+				'label' => 'Image editor',
+				'value' => drupflare_image_available()
+					? 'Drupflare_Image_Editor'
+					: 'none, the image host is not available in this deployment',
+			],
+			'mail' => [
+				'label' => 'Outgoing mail',
+				'value' => drupflare_mail_debug_value(),
 			],
 		],
 	];
