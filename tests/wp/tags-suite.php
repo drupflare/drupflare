@@ -131,6 +131,12 @@ file_put_contents(
 		return $wpdb->get_var('SELECT p.ID FROM wp_posts AS p WHERE p.post_date < NOW()');
 	}
 
+	function get_lastcommentmodified()
+	{
+		global $wpdb;
+		return $wpdb->get_var('SELECT comment_date_gmt FROM wp_comments ORDER BY comment_date_gmt DESC');
+	}
+
 	function some_unknown_core_reader()
 	{
 		global $wpdb;
@@ -336,6 +342,7 @@ ok(
 );
 $probe = <<<'PHP'
 define('ABSPATH', '/x/');
+define('DRUPFLARE_HOST_LIB', getenv('HOST_LIB'));
 $hooks = [];
 function add_action($h) { $GLOBALS['hooks'][] = $h; }
 function add_filter($h) { $GLOBALS['hooks'][] = $h; }
@@ -348,7 +355,7 @@ $run = proc_open(
 	[1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
 	$pipes,
 	null,
-	['MU_FILE' => $muDir . '/drupflare-host.php'],
+	['MU_FILE' => $muDir . '/drupflare-host.php', 'HOST_LIB' => dirname($muDir, 2)],
 );
 $registered = json_decode((string) stream_get_contents($pipes[1]), true) ?: [];
 proc_close($run);
@@ -1196,6 +1203,9 @@ $core = $call(static fn() => get_adjacent_post());
 same('a core reader we account for is fine and adds its listing', ['posts'], $core['tags']);
 same('and is recorded by name', ['get_adjacent_post'], $core['readers']);
 same('with no reason against the page', [], $core['reasons']);
+$lastComment = $call(static fn() => get_lastcommentmodified());
+same('the last comment time depends on the comment listing', ['comments'], $lastComment['tags']);
+same('and is a recognised reader', [], $lastComment['reasons']);
 $unknown = $call(static fn() => some_unknown_core_reader());
 same(
 	'a core reader we do not know makes the page untaggable',

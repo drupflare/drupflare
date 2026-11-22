@@ -189,6 +189,7 @@ function drupflare_tags_readers(): array
 		'wp_count_attachments' => ['posts'],
 		'wp_count_comments' => ['comments'],
 		'get_comment_count' => ['comments'],
+		'get_lastcommentmodified' => ['comments'],
 		'wp_list_authors' => ['posts', 'users'],
 		'get_pages' => ['posts:page'],
 		// a page lookup that finds its page is covered by the page's own tag; one that misses waits on a new page
