@@ -158,10 +158,55 @@ function rest_authorization_required_code()
 	return 401;
 }
 
+function _canonical_charset($charset)
+{
+	return 'UTF-8';
+}
+
+function wp_kses_normalize_entities($text, $context = 'html')
+{
+	return $text;
+}
+
+function network_home_url($path = '')
+{
+	return 'https://www.example.test' . $path;
+}
+
+function wp_parse_url($url, $component = -1)
+{
+	return parse_url($url, $component);
+}
+
+function wp_check_filetype($filename)
+{
+	$types = ['pdf' => 'application/pdf', 'txt' => 'text/plain'];
+	$ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+	return ['ext' => isset($types[$ext]) ? $ext : false, 'type' => $types[$ext] ?? false];
+}
+
 function register_rest_route($namespace, $route, $args = [])
 {
 	$GLOBALS['routes'][] = compact('namespace', 'route', 'args');
 	return true;
+}
+
+$GLOBALS['transients'] = [];
+$GLOBALS['dies'] = [];
+
+function get_site_transient($name)
+{
+	return $GLOBALS['transients'][$name] ?? false;
+}
+
+function admin_url($path = '')
+{
+	return 'https://example.test/wp-admin/' . $path;
+}
+
+function wp_die($message = '', $title = '', $args = [])
+{
+	$GLOBALS['dies'][] = compact('message', 'title', 'args');
 }
 
 require ABSPATH . WPINC . '/plugin.php';
@@ -177,8 +222,13 @@ require ABSPATH . WPINC . '/class-wpdb.php';
 #region fake host and drop-in
 $GLOBALS['hostInstalled'] = true;
 
+$GLOBALS['hostFns'] = [];
+
 function vrzno_env(string $name): mixed
 {
+	if (isset($GLOBALS['hostFns'][$name])) {
+		return $GLOBALS['hostFns'][$name];
+	}
 	if ($name !== 'cfwMysqlExec' || !$GLOBALS['hostInstalled']) {
 		return null;
 	}
@@ -279,6 +329,8 @@ function fixtureTests(array $keys): array
 
 #region loading
 section('loading');
+// the pack mounts the neutral classes under lib/; the checkout keeps them one level above
+define('DRUPFLARE_HOST_LIB', dirname($muDir, 2));
 $output = includeQuietly($muDir . '/drupflare-host.php');
 same('the plugin file produces zero bytes of output when included', '', $output);
 same(
@@ -307,8 +359,10 @@ $guard = <<<'PHP'
 define('ABSPATH', '/x/');
 define('DISALLOW_FILE_MODS', false);
 define('DISABLE_WP_CRON', false);
+define('DRUPFLARE_HOST_LIB', getenv('HOST_LIB'));
 function add_action() {}
 function add_filter() {}
+function remove_action() {}
 require getenv('MU_FILE');
 echo var_export(DISALLOW_FILE_MODS, true), ',', var_export(DISABLE_WP_CRON, true);
 PHP;
@@ -317,7 +371,7 @@ $run = proc_open(
 	[1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
 	$pipes,
 	null,
-	['MU_FILE' => $muDir . '/drupflare-host.php'],
+	['MU_FILE' => $muDir . '/drupflare-host.php', 'HOST_LIB' => dirname($muDir, 2)],
 );
 $childOut = stream_get_contents($pipes[1]);
 proc_close($run);
@@ -339,19 +393,43 @@ do_action('plugins_loaded');
 section('registrations');
 foreach (['_maybe_update_core', '_maybe_update_plugins', '_maybe_update_themes'] as $inlineCheck) {
 	same(
-		"the inline $inlineCheck on admin_init is removed",
-		false,
+		"the inline $inlineCheck on admin_init is left to WordPress",
+		10,
 		has_action('admin_init', $inlineCheck),
 	);
 }
 foreach (['wp_version_check', 'wp_update_plugins', 'wp_update_themes'] as $updateHook) {
-	same("the core $updateHook callback is removed", false, has_action($updateHook, $updateHook));
+	same(
+		"the core $updateHook callback is left to WordPress",
+		10,
+		has_action($updateHook, $updateHook),
+	);
 	same(
 		"another callback on $updateHook is left alone",
 		10,
 		has_action($updateHook, 'another_callback'),
 	);
 }
+same(
+	'pre_http_request runs the host request path ahead of the default priority',
+	5,
+	has_filter('pre_http_request', 'drupflare_http_pre_request'),
+);
+same(
+	'wp_image_editors offers the host editor ahead of the default priority',
+	5,
+	has_filter('wp_image_editors', 'drupflare_image_editors'),
+);
+same(
+	'pre_wp_mail answers through the host ahead of the default priority',
+	5,
+	has_filter('pre_wp_mail', 'drupflare_mail_pre_wp_mail'),
+);
+same(
+	'the mail test is added to site health at priority 10',
+	10,
+	has_filter('site_status_tests', 'drupflare_mail_site_status_tests'),
+);
 same(
 	'site_status_tests is registered at priority 10',
 	10,
@@ -412,15 +490,15 @@ same(
 	$before['async']['authorization_header'],
 	$after['async']['authorization_header'],
 );
-same(
-	'wordpress_version stays untouched',
-	$before['direct']['wordpress_version'],
-	$after['direct']['wordpress_version'],
+ok(
+	'wordpress_version is replaced by the core updates test',
+	!isset($after['direct']['wordpress_version']) &&
+		is_callable($after['direct']['drupflare_core_updates']['test'] ?? null),
 );
 same(
 	'an unrelated direct test keeps its position',
-	array_search('wordpress_version', array_keys($after['direct'])),
-	0,
+	array_values(array_diff(array_keys($before['direct']), ['wordpress_version']))[0],
+	array_key_first($after['direct']),
 );
 same(
 	'a filter run on a non-array returns it unchanged',
@@ -428,9 +506,9 @@ same(
 	apply_filters('site_status_tests', 'x'),
 );
 same(
-	'a list without the tests comes back the same',
-	['direct' => [], 'async' => []],
-	apply_filters('site_status_tests', ['direct' => [], 'async' => []]),
+	'a list without the replaced tests gains only the mail and core updates tests',
+	['drupflare_mail', 'drupflare_core_updates'],
+	array_keys(apply_filters('site_status_tests', ['direct' => [], 'async' => []])['direct']),
 );
 
 foreach (array_keys($notes) as $key) {
@@ -455,16 +533,15 @@ foreach (array_keys($notes) as $key) {
 $sql = runTest($after, 'sql_server');
 ok('sql_server shows the declared version', str_contains($sql['description'], '8.0.99-suite'));
 ok('sql_server names the SQLite backing', str_contains($sql['description'], 'SQLite'));
-$loop = runTest($after, 'loopback_requests');
-ok(
-	'loopback says the site cannot call itself',
-	str_contains($loop['description'], 'cannot send requests to itself'),
-);
-$rest = runTest($after, 'rest_availability');
-ok(
-	'rest availability says the site cannot call itself',
-	str_contains($rest['description'], 'cannot send requests to itself'),
-);
+foreach (['loopback_requests', 'rest_availability'] as $own) {
+	$kind = isset($before['direct'][$own]) ? 'direct' : 'async';
+	same(
+		"$own is left to WordPress, which runs it through the request filter",
+		$before[$kind][$own],
+		$after[$kind][$own],
+	);
+	ok("$own has no note of its own", !isset($notes[$own]));
+}
 $updates = runTest($after, 'background_updates');
 ok(
 	'updates say they are host operations',
@@ -481,8 +558,8 @@ $partial = apply_filters('site_status_tests', [
 	'async' => [],
 ]);
 same(
-	'a test absent from the list is not added',
-	['wordpress_version'],
+	'a replaced test absent from the list is not added, and the core version test is dropped',
+	['drupflare_mail', 'drupflare_core_updates'],
 	array_keys($partial['direct']),
 );
 #endregion
@@ -515,8 +592,26 @@ same(
 		'disallow_file_mods',
 		'disable_wp_cron',
 		'php_version',
+		'outbound_requests',
+		'image_editor',
+		'mail',
 	],
 	array_keys($fields),
+);
+same(
+	'mail says it is unavailable when no host answers',
+	'not available in this deployment',
+	$fields['mail']['value'],
+);
+same(
+	'outbound requests say it is unavailable when no host answers',
+	'not available in this deployment',
+	$fields['outbound_requests']['value'],
+);
+same(
+	'the image editor says it is unavailable when no host answers',
+	'none, the image host is not available in this deployment',
+	$fields['image_editor']['value'],
 );
 same('host function name', 'cfwMysqlExec', $fields['host_function']['value']);
 same('host function installed', 'yes', $fields['host_function_installed']['value']);
@@ -575,9 +670,11 @@ same(
 		'last_cron',
 		'siteurl',
 		'home',
+		'mail',
 	],
 	array_keys($status),
 );
+same('mail status is null without the host snapshot', null, $status['mail']);
 same('wordpress version', $wp_version, $status['wordpress_version']);
 same('php version', PHP_VERSION, $status['php_version']);
 same('db class', BridgeWpdb::class, $status['db_class']);
@@ -632,6 +729,554 @@ ok('the response sends no-store', str_contains($headers['Cache-Control'] ?? '', 
 same('the response status', 200, $response->get_status());
 same('the response carries the same array', drupflare_host_status(), $response->get_data());
 $GLOBALS['userCan'] = false;
+#endregion
+
+#region mail
+section('mail');
+$GLOBALS['mailSeen'] = [];
+$GLOBALS['mailReply'] = ['ok' => true, 'queued' => 1, 'transport' => 'api'];
+$GLOBALS['hostFns']['cfwMail'] = static function (string $json): string {
+	$GLOBALS['mailSeen'][] = json_decode($json, true);
+	return json_encode($GLOBALS['mailReply']);
+};
+$GLOBALS['statsReply'] = [
+	'mailTransport' => 'api',
+	'mailQueue' => 2,
+	'mailFailed' => null,
+];
+$GLOBALS['hostFns']['cfwServeStats'] = static fn(): string => json_encode($GLOBALS['statsReply']);
+$GLOBALS['failed'] = [];
+$GLOBALS['succeeded'] = 0;
+add_action('wp_mail_failed', static function ($error) {
+	$GLOBALS['failed'][] = $error;
+});
+add_action('wp_mail_succeeded', static function () {
+	$GLOBALS['succeeded']++;
+});
+
+function sendMail(array $atts): array
+{
+	$GLOBALS['mailSeen'] = [];
+	$GLOBALS['failed'] = [];
+	$result = drupflare_mail_pre_wp_mail(null, $atts + ['headers' => '', 'attachments' => []]);
+	return [$result, $GLOBALS['mailSeen'][0] ?? null];
+}
+
+[$result, $seen] = sendMail([
+	'to' => 'a@example.org',
+	'subject' => 'Hello',
+	'message' => 'Body text',
+]);
+same('a plain message is accepted', true, $result);
+same('the host got the recipient', 'a@example.org', $seen['to']);
+same(
+	'the sender defaults to wordpress at the site host without www',
+	'WordPress <wordpress@example.test>',
+	$seen['from'],
+);
+same(
+	'the subject and plain body arrive',
+	['Hello', 'Body text', null],
+	[$seen['subject'], $seen['text'], $seen['html']],
+);
+same('the message asks for the default attempts', 3, $seen['retry']);
+same('no attachments are sent when there are none', [], $seen['attachments']);
+same('wp_mail_succeeded fired once', 1, $GLOBALS['succeeded']);
+same('wp_mail_failed did not fire', [], $GLOBALS['failed']);
+
+$GLOBALS['mailSeen'] = [];
+same(
+	'another filter that already answered wins',
+	false,
+	drupflare_mail_pre_wp_mail(false, ['to' => 'a@example.org']),
+);
+same('and the host is not called for it', [], $GLOBALS['mailSeen']);
+
+[$result, $seen] = sendMail([
+	'to' => ['A One <a@example.org>', 'b@example.org'],
+	'subject' => 'Both',
+	'message' => 'x',
+	'headers' => [
+		'From: "The Site" <site@example.test>',
+		'Reply-To: Help Desk <help@example.test>',
+		'Cc: c@example.org, "Last, First" <d@example.org>',
+		'Bcc: e@example.org',
+		'In-Reply-To: <abc@example.test>',
+		'References: <abc@example.test>',
+		'X-Custom: dropped',
+	],
+]);
+same(
+	'names are kept and addresses are joined',
+	'A One <a@example.org>, b@example.org',
+	$seen['to'],
+);
+same('a From header sets the sender and its name', 'The Site <site@example.test>', $seen['from']);
+same('Reply-To is passed', 'Help Desk <help@example.test>', $seen['replyTo']);
+same(
+	'Cc splits on commas as wp_mail does, so a name with a comma loses its first half, and Bcc passes',
+	['Cc' => 'c@example.org, First <d@example.org>', 'Bcc' => 'e@example.org'],
+	array_intersect_key($seen['headers'], ['Cc' => 1, 'Bcc' => 1]),
+);
+same(
+	'threading headers pass',
+	['<abc@example.test>', '<abc@example.test>'],
+	[$seen['headers']['In-Reply-To'], $seen['headers']['References']],
+);
+ok(
+	'another custom header is dropped, not sent as something else',
+	!isset($seen['headers']['X-Custom']),
+);
+
+[$result, $seen] = sendMail([
+	'to' => 'a@example.org',
+	'subject' => "Line\r\nBcc: evil@example.net",
+	'message' => 'x',
+	'headers' => "From: Site <site@example.test>\r\n",
+]);
+ok(
+	'a line break in the subject cannot start a header',
+	$seen !== null &&
+		!str_contains($seen['subject'], "\n") &&
+		!str_contains($seen['subject'], "\r"),
+);
+[$result, $seen] = sendMail([
+	'to' => 'a@example.org',
+	'subject' => 's',
+	'message' => 'x',
+	'headers' => 'From: Mallory',
+]);
+ok('an invalid From address is refused before the host', $result === false && $seen === null);
+same(
+	'the refusal reaches wp_mail_failed as a WP_Error',
+	'wp_mail_failed',
+	$GLOBALS['failed'][0]->get_error_code(),
+);
+
+[$result, $seen] = sendMail([
+	'to' => 'a@example.org',
+	'subject' => 'Html',
+	'message' => '<p>Hello <b>there</b></p>',
+	'headers' => 'Content-Type: text/html; charset=UTF-8',
+]);
+same(
+	'an html header sends the markup and a text version',
+	['<p>Hello <b>there</b></p>', 'Hello there'],
+	[$seen['html'], $seen['text']],
+);
+add_filter('wp_mail_content_type', $htmlType = static fn() => 'text/html');
+[$result, $seen] = sendMail(['to' => 'a@example.org', 'subject' => 's', 'message' => '<i>x</i>']);
+same('the content type filter is honored', '<i>x</i>', $seen['html']);
+remove_filter('wp_mail_content_type', $htmlType);
+
+[$result, $seen] = sendMail([
+	'to' => 'not an address, ok@example.org',
+	'subject' => 's',
+	'message' => 'x',
+]);
+same('an invalid recipient is skipped and the rest are sent', 'ok@example.org', $seen['to']);
+[$result, $seen] = sendMail(['to' => 'nobody', 'subject' => 's', 'message' => 'x']);
+ok('no valid recipient fails without calling the host', $result === false && $seen === null);
+same(
+	'the message names the cause',
+	'You must provide at least one recipient email address.',
+	$GLOBALS['failed'][0]->get_error_message(),
+);
+same('the error data carries the mail', 'nobody', $GLOBALS['failed'][0]->get_error_data()['to'][0]);
+
+$GLOBALS['mailReply'] = ['ok' => false, 'error' => 'mail is switched off by MAIL_TRANSPORT=off'];
+$GLOBALS['succeeded'] = 0;
+[$result, $seen] = sendMail(['to' => 'a@example.org', 'subject' => 's', 'message' => 'x']);
+same('a host refusal returns false', false, $result);
+same(
+	'the host reason is the error',
+	'Mail was not accepted: mail is switched off by MAIL_TRANSPORT=off',
+	$GLOBALS['failed'][0]->get_error_message(),
+);
+same('wp_mail_failed fired exactly once', 1, count($GLOBALS['failed']));
+same('wp_mail_succeeded stayed quiet', 0, $GLOBALS['succeeded']);
+$GLOBALS['mailReply'] = ['ok' => true, 'queued' => 2, 'transport' => 'api'];
+
+$dir = sys_get_temp_dir() . '/mu-mail-' . bin2hex(random_bytes(4));
+mkdir($dir);
+file_put_contents($dir . '/report.pdf', '%PDF-1.4 body');
+file_put_contents($dir . '/big.txt', str_repeat('x', 700001));
+[$result, $seen] = sendMail([
+	'to' => 'a@example.org',
+	'subject' => 's',
+	'message' => 'x',
+	'attachments' => [$dir . '/report.pdf', 'Notes' => $dir . '/report.pdf'],
+]);
+same(
+	'attachments carry a name, a type and base64 bytes',
+	[
+		[
+			'filename' => 'report.pdf',
+			'type' => 'application/pdf',
+			'b64' => base64_encode('%PDF-1.4 body'),
+		],
+		[
+			'filename' => 'Notes',
+			'type' => 'application/pdf',
+			'b64' => base64_encode('%PDF-1.4 body'),
+		],
+	],
+	$seen['attachments'],
+);
+[$result, $seen] = sendMail([
+	'to' => 'a@example.org',
+	'subject' => 's',
+	'message' => 'x',
+	'attachments' => [$dir . '/big.txt'],
+]);
+ok('attachments over the cap fail before the host', $result === false && $seen === null);
+ok(
+	'the cap is named in the error',
+	str_contains($GLOBALS['failed'][0]->get_error_message(), '700000-byte limit'),
+);
+[$result, $seen] = sendMail([
+	'to' => 'a@example.org',
+	'subject' => 's',
+	'message' => 'x',
+	'attachments' => [$dir . '/missing.pdf'],
+]);
+ok('a missing attachment fails before the host', $result === false && $seen === null);
+same(
+	'and says which file',
+	'attachment is not readable: missing.pdf',
+	$GLOBALS['failed'][0]->get_error_message(),
+);
+[$result, $seen] = sendMail([
+	'to' => 'a@example.org',
+	'subject' => 's',
+	'message' => 'x',
+	'embeds' => [$dir . '/report.pdf'],
+]);
+ok('an embedded image is refused rather than dropped', $result === false && $seen === null);
+same(
+	'the refusal names embeds',
+	'inline images (embeds) are not supported on this host',
+	$GLOBALS['failed'][0]->get_error_message(),
+);
+unlink($dir . '/report.pdf');
+unlink($dir . '/big.txt');
+rmdir($dir);
+
+$saved = $GLOBALS['hostFns']['cfwMail'];
+unset($GLOBALS['hostFns']['cfwMail']);
+[$result] = sendMail(['to' => 'a@example.org', 'subject' => 's', 'message' => 'x']);
+ok(
+	'without the host function nothing is sent and the failure is reported',
+	$result === false && count($GLOBALS['failed']) === 1,
+);
+$GLOBALS['hostFns']['cfwMail'] = $saved;
+
+section('mail status');
+$health = drupflare_mail_site_health_test();
+same('a working queue is good', 'good', $health['status']);
+same(
+	'the status reads the host snapshot',
+	['api', 2, 0],
+	[
+		drupflare_mail_host_status()['transport'],
+		drupflare_mail_host_status()['queued'],
+		drupflare_mail_host_status()['failed'],
+	],
+);
+$GLOBALS['statsReply']['mailFailed'] = [
+	'count' => 3,
+	'lastError' => 'API 403: <b>no</b>',
+	'lastAt' => 1700000000000,
+];
+$health = drupflare_mail_site_health_test();
+same('lost messages are a recommendation', 'recommended', $health['status']);
+ok('the count is visible', str_contains($health['label'], '3 accepted messages'));
+ok(
+	'the last error is visible and escaped',
+	str_contains($health['description'], 'API 403: &lt;b&gt;no&lt;/b&gt;'),
+);
+same('the failure time is in seconds', 1700000000, drupflare_mail_host_status()['last_failed_at']);
+same('the status page carries the failure count', 3, drupflare_host_status()['mail']['failed']);
+$GLOBALS['userCan'] = true;
+$response = $GLOBALS['routes'][0]['args']['callback']();
+same('the rest status carries it too', 3, $response->get_data()['mail']['failed']);
+$GLOBALS['userCan'] = false;
+ok(
+	'the debug line shows count and error',
+	str_contains(drupflare_mail_debug_value(), '3 failed after acceptance') &&
+		str_contains(drupflare_mail_debug_value(), 'last error: API 403'),
+);
+$GLOBALS['statsReply'] = ['mailTransport' => null, 'mailQueue' => 0, 'mailFailed' => null];
+$health = drupflare_mail_site_health_test();
+same('no transport is a recommendation that says what to set', 'recommended', $health['status']);
+ok(
+	'and names the three transports',
+	str_contains($health['description'], 'send_email binding') &&
+		str_contains($health['description'], 'SMTP'),
+);
+$listed = drupflare_mail_site_status_tests(['direct' => [], 'async' => []]);
+ok(
+	'the test is registered as a direct test with a callable',
+	is_callable($listed['direct']['drupflare_mail']['test']),
+);
+unset($GLOBALS['hostFns']['cfwServeStats']);
+same('without the host snapshot the status is null', null, drupflare_mail_host_status());
+same(
+	'and the debug line says so',
+	'not available in this deployment',
+	drupflare_mail_debug_value(),
+);
+#endregion
+
+#region uploads
+section('uploads');
+same(
+	'upload_dir is registered ahead of the default priority',
+	5,
+	has_filter('upload_dir', 'drupflare_uploads_dir'),
+);
+same(
+	'the move filter is registered with four arguments',
+	5,
+	has_filter('pre_move_uploaded_file', 'drupflare_uploads_pre_move'),
+);
+same(
+	'the size limit filter is registered',
+	20,
+	has_filter('upload_size_limit', 'drupflare_uploads_size_limit'),
+);
+$dirs = [
+	'path' => '/p/2026/11',
+	'subdir' => '/2026/11',
+	'basedir' => '/p',
+	'baseurl' => 'https://x/u',
+];
+same('without the file store the directories are left alone', $dirs, drupflare_uploads_dir($dirs));
+same('a filter run on a non-array returns it unchanged', 'x', drupflare_uploads_dir('x'));
+$GLOBALS['hostFns']['cfwFileWrite'] = static fn(): string => '{"ok":true}';
+$GLOBALS['hostFns']['cfwFileRead'] = static fn(): string => '{"ok":true,"b64":""}';
+$mapped = drupflare_uploads_dir($dirs);
+same(
+	'with the file store the base is public://wp-content/uploads and the url is kept',
+	['public://wp-content/uploads/2026/11', 'public://wp-content/uploads', 'https://x/u'],
+	[$mapped['path'], $mapped['basedir'], $mapped['baseurl']],
+);
+same(
+	'the admin limit is held to the buffer cap',
+	10485760,
+	drupflare_uploads_size_limit(104857600),
+);
+same('a smaller limit stays', 1000, drupflare_uploads_size_limit(1000));
+same(
+	'a decision already made is kept',
+	false,
+	drupflare_uploads_pre_move(false, [], 'public://a', 'x'),
+);
+same(
+	'a path outside the store is left to WordPress',
+	null,
+	drupflare_uploads_pre_move(null, ['tmp_name' => '/tmp/a'], '/var/a', 'x'),
+);
+same(
+	'a temp file the parser did not list is left to WordPress',
+	null,
+	drupflare_uploads_pre_move(
+		null,
+		['tmp_name' => '/tmp/unlisted'],
+		'public://wp-content/uploads/a.png',
+		'x',
+	),
+);
+same(
+	'the traversal check refuses a climbing path',
+	null,
+	drupflare_uploads_target('public://wp-content/uploads/../x'),
+);
+same(
+	'and reads a plain one',
+	'wp-content/uploads/a.png',
+	drupflare_uploads_target('public://wp-content/uploads/a.png'),
+);
+unset($GLOBALS['hostFns']['cfwFileWrite'], $GLOBALS['hostFns']['cfwFileRead']);
+#endregion
+
+#region core updates
+section('core updates');
+$offerOf = static function (mixed $transient): ?string {
+	$GLOBALS['transients']['update_core'] = $transient;
+	return drupflare_updates_offer();
+};
+$upgrade = static fn(string $current, string $response = 'upgrade'): object => (object) [
+	'updates' => [(object) ['response' => $response, 'current' => $current]],
+];
+same('no transient reads as no offer', null, $offerOf(false));
+same('a newer upgrade is the offer', '99.0.0', $offerOf($upgrade('99.0.0')));
+same('a latest response is no offer', null, $offerOf($upgrade('99.0.0', 'latest')));
+same('an upgrade that is not newer is no offer', null, $offerOf($upgrade('1.0.0')));
+same('a transient that is not an object is no offer', null, $offerOf('x'));
+
+$text = drupflare_updates_explanation();
+ok(
+	'the explanation names the version, the constant, the pack and the route',
+	str_contains($text, $GLOBALS['wp_version']) &&
+		str_contains($text, 'DISALLOW_FILE_MODS') &&
+		str_contains($text, 'new WordPress pack') &&
+		str_contains($text, '/wp-packages'),
+);
+ok('the explanation is plain ascii', preg_match('/^[\x20-\x7e]*$/', $text) === 1);
+$GLOBALS['transients']['update_core'] = $upgrade('99.0.0');
+ok(
+	'the explanation names an available version',
+	str_contains(drupflare_updates_explanation(), 'WordPress 99.0.0 is available'),
+);
+
+$GLOBALS['dies'] = [];
+drupflare_updates_screen();
+same('an update screen answers once', 1, count($GLOBALS['dies']));
+same(
+	'an update screen answers 200, since it is information and not an error',
+	200,
+	$GLOBALS['dies'][0]['args']['response'],
+);
+ok(
+	'an update screen carries the explanation and offers nothing to run',
+	str_contains($GLOBALS['dies'][0]['message'], 'Updates are applied by the platform') &&
+		!str_contains($GLOBALS['dies'][0]['message'], 'update-core.php') &&
+		!stripos($GLOBALS['dies'][0]['message'], '<form'),
+);
+foreach (['update-core.php', 'update.php', 'plugin-install.php', 'theme-install.php'] as $screen) {
+	ok(
+		"$screen is answered by the platform notice",
+		has_action('load-' . $screen, 'drupflare_updates_screen') !== false,
+	);
+}
+
+same(
+	'a screen the menu hides is answered before core refuses it with a 403',
+	10,
+	has_action('admin_page_access_denied', 'drupflare_updates_denied'),
+);
+$GLOBALS['dies'] = [];
+$GLOBALS['pagenow'] = 'plugin-install.php';
+drupflare_updates_denied();
+same('a denied update screen is answered with the explanation', 1, count($GLOBALS['dies']));
+$GLOBALS['dies'] = [];
+$GLOBALS['pagenow'] = 'edit.php';
+drupflare_updates_denied();
+same('a denied screen that installs nothing is left to core', 0, count($GLOBALS['dies']));
+unset($GLOBALS['pagenow']);
+
+add_action('admin_notices', 'update_nag', 3);
+add_action('network_admin_notices', 'update_nag', 3);
+drupflare_updates_register();
+same(
+	'the removal waits for admin_init, when the admin filters have been added',
+	10,
+	has_action('admin_init', 'drupflare_updates_admin_init'),
+);
+same(
+	"core's own update notice is still there until then",
+	3,
+	has_action('admin_notices', 'update_nag'),
+);
+drupflare_updates_admin_init();
+same(
+	"core's own update notice is removed",
+	[false, false],
+	[has_action('admin_notices', 'update_nag'), has_action('network_admin_notices', 'update_nag')],
+);
+same(
+	'the platform notice takes its place',
+	3,
+	has_action('admin_notices', 'drupflare_updates_notice'),
+);
+
+$GLOBALS['userCan'] = false;
+ob_start();
+drupflare_updates_notice();
+same('a visitor without manage_options sees no notice', '', ob_get_clean());
+$GLOBALS['userCan'] = true;
+ob_start();
+drupflare_updates_notice();
+$notice = (string) ob_get_clean();
+ok(
+	'an administrator sees the offer and who applies it',
+	str_contains($notice, 'WordPress 99.0.0 is available') &&
+		str_contains($notice, 'platform applies core updates') &&
+		!str_contains($notice, 'update-core.php'),
+);
+$GLOBALS['transients']['update_core'] = false;
+ob_start();
+drupflare_updates_notice();
+same('with no offer there is no notice', '', ob_get_clean());
+$GLOBALS['userCan'] = false;
+
+$tests = drupflare_updates_site_status_tests([
+	'direct' => ['wordpress_version' => []],
+	'async' => [],
+]);
+$current = $tests['direct']['drupflare_core_updates']['test']();
+same('with no offer the site health test is good', 'good', $current['status']);
+$GLOBALS['transients']['update_core'] = $upgrade('99.0.0');
+$offered = $tests['direct']['drupflare_core_updates']['test']();
+same('with an offer it is recommended, not critical', 'recommended', $offered['status']);
+ok(
+	'it explains and links to no screen',
+	str_contains($offered['description'], '/wp-packages') &&
+		!str_contains($offered['description'] . $offered['label'], 'update-core.php'),
+);
+same('a non-array list is returned unchanged', 'x', drupflare_updates_site_status_tests('x'));
+$GLOBALS['transients']['update_core'] = false;
+#endregion
+
+#region multisite
+section('multisite');
+same('nothing defines MULTISITE', false, defined('MULTISITE'));
+same('nothing defines WP_ALLOW_MULTISITE', false, defined('WP_ALLOW_MULTISITE'));
+same(
+	'the network setup screen is refused',
+	10,
+	has_action('load-network.php', 'drupflare_multisite_refuse'),
+);
+$GLOBALS['dies'] = [];
+drupflare_multisite_refuse();
+same('the refusal answers 501', 501, $GLOBALS['dies'][0]['args']['response'] ?? 0);
+ok(
+	'the refusal says Multisite is not supported and why',
+	str_contains($GLOBALS['dies'][0]['message'], 'Multisite is not supported') &&
+		str_contains($GLOBALS['dies'][0]['message'], 'own database'),
+);
+foreach (
+	[
+		'/wp-signup.php' => true,
+		'/blog/wp-activate.php' => true,
+		'/wp-admin/network/' => true,
+		'/wp-admin/network' => true,
+		'/wp-admin/network/sites.php' => true,
+		'/wp-admin/network.php' => false,
+		'/wp-admin/networks.php' => false,
+		'/wp-login.php' => false,
+		'/' => false,
+	]
+	as $path => $expected
+) {
+	same("entry point check for $path", $expected, drupflare_multisite_entry($path));
+}
+$_SERVER['REQUEST_URI'] = '/wp-signup.php?new=1';
+drupflare_multisite_register();
+ok(
+	'a request for a network entry point is refused at load',
+	has_action('muplugins_loaded', 'drupflare_multisite_refuse') !== false,
+);
+remove_action('muplugins_loaded', 'drupflare_multisite_refuse');
+$_SERVER['REQUEST_URI'] = '/hello/';
+drupflare_multisite_register();
+same(
+	'an ordinary request is not',
+	false,
+	has_action('muplugins_loaded', 'drupflare_multisite_refuse'),
+);
+unset($_SERVER['REQUEST_URI']);
 #endregion
 
 echo "\n$pass passed, $fail failed\n";
