@@ -23,6 +23,7 @@ function drupflare_host_status(): array
 		'last_cron' => is_numeric($lastCron) ? (int) $lastCron : null,
 		'siteurl' => (string) get_option('siteurl'),
 		'home' => (string) get_option('home'),
+		'mail' => drupflare_mail_host_status(),
 	];
 
 	return apply_filters('drupflare_host_status', $status);
