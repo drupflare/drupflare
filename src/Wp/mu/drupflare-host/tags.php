@@ -55,7 +55,13 @@ function drupflare_tags_quiet_option(string $name): bool
 {
 	return in_array(
 		$name,
-		['cron', 'doing_cron', '_transient_doing_cron', '_transient_timeout_doing_cron'],
+		[
+			'cron',
+			'doing_cron',
+			'_transient_doing_cron',
+			'_transient_timeout_doing_cron',
+			'drupflare_host_last_cron',
+		],
 		true,
 	);
 }
@@ -640,6 +646,14 @@ function drupflare_tags_on_query(mixed $sql): mixed
 			return $sql;
 		}
 		$state['readers'][$reader] = true;
+		// a stock adjacent-post read depends on the links of its own post, not on every post
+		if ($reader === 'get_adjacent_post') {
+			$for = drupflare_tags_plain_adjacent($sql);
+			if ($for > 0) {
+				drupflare_tags_note('post_links:' . $for);
+				return $sql;
+			}
+		}
 		foreach ($readers[$reader] as $tag) {
 			drupflare_tags_note($tag);
 		}
@@ -659,6 +673,26 @@ function drupflare_tags_on_query(mixed $sql): mixed
 		}
 	}
 	return $sql;
+}
+
+/**
+ * The ID of the post a stock adjacent-post lookup was run for, or 0 when the statement is anything
+ * else. Stock means an anonymous visitor's lookup: one post type, published posts only, ordered by
+ * date then ID, with no term join, exclusion or filtered clause. A theme's own SQL is not stock.
+ */
+function drupflare_tags_plain_adjacent(string $sql): int
+{
+	$text = trim((string) preg_replace('/\s+/', ' ', $sql));
+	$posts = preg_quote(drupflare_tags_prefix() . 'posts', '/');
+	$date = "'\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}'";
+	$pattern =
+		"/^SELECT p\\.ID FROM `?$posts`? AS p WHERE \\(p\\.post_date ([<>]) $date OR " .
+		"\\(p\\.post_date = $date AND p\\.ID \\1 (\\d+)\\)\\) AND p\\.post_type = '[A-Za-z0-9_-]{1,20}' " .
+		"AND p\\.post_status = 'publish' ORDER BY p\\.post_date (DESC|ASC), p\\.ID \\3 LIMIT 1$/";
+	if (preg_match($pattern, $text, $m) !== 1 || ($m[1] === '<') !== ($m[3] === 'DESC')) {
+		return 0;
+	}
+	return (int) $m[2];
 }
 
 function drupflare_tags_prefix(): string
@@ -913,8 +947,107 @@ function drupflare_tags_on_transition_post_status(mixed $new, mixed $old, mixed 
 	}
 }
 
-function drupflare_tags_on_post_meta(mixed $meta, mixed $post_id): void
+/**
+ * The published post of this type next to a position in date order, ID breaking a tie as the
+ * adjacent-post query does, or 0. The post at that position is never its own neighbour.
+ */
+function drupflare_tags_neighbour(string $date, int $id, string $type, bool $previous): int
 {
+	global $wpdb;
+	if (!is_object($wpdb)) {
+		return 0;
+	}
+	$op = $previous ? '<' : '>';
+	$order = $previous ? 'DESC' : 'ASC';
+	$table = drupflare_tags_prefix() . 'posts';
+	$found = drupflare_tags_quietly(
+		static fn() => $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT ID FROM $table WHERE (post_date $op %s OR (post_date = %s AND ID $op %d)) " .
+					"AND post_type = %s AND post_status = 'publish' AND ID <> %d " .
+					"ORDER BY post_date $order, ID $order LIMIT 1",
+				$date,
+				$date,
+				$id,
+				$type,
+				$id,
+			),
+		),
+	);
+	return is_numeric($found) ? (int) $found : 0;
+}
+
+/**
+ * Names the links of the published posts on either side of a post at the place it now holds: they
+ * gain a link to it. A post that leaves needs nothing here, because every page that linked to it
+ * loaded it and carries its post tag.
+ */
+function drupflare_tags_announce_neighbours(mixed $post): void
+{
+	if (!is_object($post)) {
+		return;
+	}
+	$date = (string) ($post->post_date ?? '');
+	$id = (int) ($post->ID ?? 0);
+	$type = (string) ($post->post_type ?? '');
+	if (
+		$date === '' ||
+		$id <= 0 ||
+		$type === '' ||
+		in_array($type, drupflare_tags_structural_types(), true) ||
+		in_array($type, drupflare_tags_hidden_types(), true)
+	) {
+		return;
+	}
+	$tags = [];
+	foreach ([true, false] as $previous) {
+		$neighbour = drupflare_tags_neighbour($date, $id, $type, $previous);
+		if ($neighbour > 0) {
+			$tags[] = 'post_links:' . $neighbour;
+		}
+	}
+	if ($tags !== []) {
+		drupflare_tags_announce($tags);
+	}
+}
+
+function drupflare_tags_on_transition_neighbours(mixed $new, mixed $old, mixed $post = null): void
+{
+	if ($new === 'publish' && $old !== 'publish') {
+		drupflare_tags_announce_neighbours($post);
+	}
+}
+
+// a published post whose date or type changed now sits between two other posts
+function drupflare_tags_on_post_updated(mixed $id, mixed $after = null, mixed $before = null): void
+{
+	if (
+		is_object($after) &&
+		is_object($before) &&
+		($before->post_status ?? '') === 'publish' &&
+		($after->post_status ?? '') === 'publish' &&
+		((string) ($after->post_date ?? '') !== (string) ($before->post_date ?? '') ||
+			(string) ($after->post_type ?? '') !== (string) ($before->post_type ?? ''))
+	) {
+		drupflare_tags_announce_neighbours($after);
+	}
+}
+
+/**
+ * Post meta WordPress keeps for its ping and enclosure queues. Publishing sets both flags and the
+ * next cron run clears them, and no page shows either.
+ */
+function drupflare_tags_quiet_post_meta(string $key): bool
+{
+	return in_array($key, ['_encloseme', '_pingme'], true);
+}
+
+function drupflare_tags_on_post_meta(mixed $meta, mixed $post_id, mixed $key = ''): void
+{
+	if (drupflare_tags_quiet_post_meta((string) $key)) {
+		drupflare_tags_quiet('postmeta');
+		return;
+	}
 	drupflare_tags_announce(['post:' . (int) $post_id]);
 }
 
@@ -1119,9 +1252,11 @@ function drupflare_tags_hooks(): array
 	return [
 		['clean_post_cache', 'drupflare_tags_on_clean_post_cache', 2],
 		['transition_post_status', 'drupflare_tags_on_transition_post_status', 3],
-		['added_post_meta', 'drupflare_tags_on_post_meta', 2],
-		['updated_post_meta', 'drupflare_tags_on_post_meta', 2],
-		['deleted_post_meta', 'drupflare_tags_on_post_meta', 2],
+		['transition_post_status', 'drupflare_tags_on_transition_neighbours', 3],
+		['post_updated', 'drupflare_tags_on_post_updated', 3],
+		['added_post_meta', 'drupflare_tags_on_post_meta', 3],
+		['updated_post_meta', 'drupflare_tags_on_post_meta', 3],
+		['deleted_post_meta', 'drupflare_tags_on_post_meta', 3],
 		['added_term_relationship', 'drupflare_tags_on_relationship', 3],
 		['deleted_term_relationships', 'drupflare_tags_on_relationship', 3],
 		['created_term', 'drupflare_tags_on_term_change', 3],

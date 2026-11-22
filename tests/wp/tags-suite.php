@@ -125,10 +125,10 @@ file_put_contents(
 	"$tree/wp-includes/link-template.php",
 	<<<'PHP'
 	<?php
-	function get_adjacent_post()
+	function get_adjacent_post($sql = 'SELECT p.ID FROM wp_posts AS p WHERE p.post_date < NOW()')
 	{
 		global $wpdb;
-		return $wpdb->get_var('SELECT p.ID FROM wp_posts AS p WHERE p.post_date < NOW()');
+		return $wpdb->get_var($sql);
 	}
 
 	function get_lastcommentmodified()
@@ -303,9 +303,20 @@ function quietTables(): array
 	return array_keys(drupflare_tags_state()['quiet']);
 }
 
-function post(int $id, string $type = 'post', string $status = 'publish'): WP_Post
-{
-	$post = new WP_Post((object) ['ID' => $id, 'post_type' => $type, 'post_status' => $status]);
+function post(
+	int $id,
+	string $type = 'post',
+	string $status = 'publish',
+	string $date = '2020-03-01 10:00:00',
+): WP_Post {
+	$post = new WP_Post(
+		(object) [
+			'ID' => $id,
+			'post_type' => $type,
+			'post_status' => $status,
+			'post_date' => $date,
+		],
+	);
 	$GLOBALS['fakePosts'][$id] = $post;
 	return $post;
 }
@@ -457,6 +468,32 @@ function hookRows(): array
 			static fn() => ['draft', 'auto-draft', $publish()],
 			[],
 			'a draft saving says nothing here',
+		],
+		[
+			'transition_post_status',
+			static fn() => ['publish', 'draft', $publish()],
+			['post:5', 'posts', 'posts:post', 'post_links:4', 'post_links:9'],
+			'publishing names the links of the published posts on either side',
+			static function (): void {
+				$GLOBALS['wpdb']->var = ['4', '9'];
+			},
+			null,
+			'drupflare_tags_on_transition_neighbours',
+		],
+		[
+			'post_updated',
+			static fn() => [
+				5,
+				post(5, 'post', 'publish', '2020-06-01 10:00:00'),
+				post(5, 'post', 'publish', '2020-01-01 10:00:00'),
+			],
+			['post_links:3', 'post_links:4'],
+			'moving a published post names the links of the neighbours at its new place',
+			static function (): void {
+				$GLOBALS['wpdb']->var = ['3', '4'];
+			},
+			null,
+			'drupflare_tags_on_post_updated',
 		],
 		['added_post_meta', static fn() => [1, 9, 'k', 'v'], ['post:9'], 'a post meta added'],
 		['updated_post_meta', static fn() => [1, 9, 'k', 'v'], ['post:9'], 'a post meta updated'],
@@ -685,6 +722,30 @@ function hookRows(): array
 			'a widget option is wholesale',
 		],
 		['updated_option', static fn() => ['cron', [], []], false, 'the cron option is quiet'],
+		[
+			'updated_option',
+			static fn() => ['drupflare_host_last_cron', 1, 2],
+			false,
+			'the host cron stamp is quiet',
+		],
+		[
+			'deleted_post_meta',
+			static fn() => [[1], 5, '_encloseme', '1'],
+			false,
+			'clearing the enclosure queue flag is quiet',
+		],
+		[
+			'added_post_meta',
+			static fn() => [1, 5, '_pingme', '1'],
+			false,
+			'setting the ping queue flag is quiet',
+		],
+		[
+			'updated_post_meta',
+			static fn() => [1, 5, '_thumbnail_id', '9'],
+			['post:5'],
+			'a featured image change is announced',
+		],
 		['switch_theme', static fn() => ['x'], 'structural', 'a theme switch'],
 		['wp_create_nav_menu', static fn() => [1], 'structural', 'a menu created'],
 		['wp_update_nav_menu', static fn() => [1], 'structural', 'a menu updated'],
@@ -724,6 +785,7 @@ function hookRows(): array
 			'label' => $label,
 			'prepare' => $set[4] ?? null,
 			'also' => $set[5] ?? null,
+			'handler' => $set[6] ?? null,
 		];
 		if (is_array($expect)) {
 			$row['tags'] = $expect;
@@ -789,6 +851,7 @@ foreach ($rows as $row) {
 }
 
 section('a mutation control for every hook: remove the handler and the row stops holding');
+$neighbourHandlers = ['drupflare_tags_on_transition_neighbours', 'drupflare_tags_on_post_updated'];
 foreach (drupflare_tags_hooks() as [$hook, $handler, $args]) {
 	foreach ($rows as $row) {
 		if ($row['hook'] !== $hook && $row['also'] !== $hook) {
@@ -797,12 +860,123 @@ foreach (drupflare_tags_hooks() as [$hook, $handler, $args]) {
 		if ($row['label'] === 'a draft saving says nothing here') {
 			continue;
 		}
+		// a row owned by a neighbour handler is judged against that handler alone
+		$neighbour = in_array($handler, $neighbourHandlers, true);
+		if ($row['handler'] !== null ? $row['handler'] !== $handler : $neighbour) {
+			continue;
+		}
 		remove_action($hook, $handler, 10);
 		$holds = rowHolds($row);
 		add_action($hook, $handler, 10, $args);
 		ok("control: without $handler on $hook, '{$row['label']}' fails", !$holds);
 	}
 }
+
+section('neighbours of a published post');
+fresh();
+$GLOBALS['wpdb']->var = ['4', '9'];
+do_action('transition_post_status', 'publish', 'draft', post(5));
+$lookups = array_values(
+	array_filter($GLOBALS['wpdb']->log, static fn(string $q): bool => str_contains($q, 'ID <>')),
+);
+same('a status change looks up one neighbour each way', 2, count($lookups));
+ok(
+	'the previous neighbour sorts by date then ID, below the post',
+	str_contains(
+		$lookups[0] ?? '',
+		'post_date < 2020-03-01 10:00:00 OR (post_date = 2020-03-01 10:00:00 AND ID < 5)',
+	) && str_contains($lookups[0] ?? '', 'ORDER BY post_date DESC, ID DESC LIMIT 1'),
+);
+ok(
+	'the next neighbour sorts the other way and is published and of the same type',
+	str_contains($lookups[1] ?? '', 'ID > 5') &&
+		str_contains($lookups[1] ?? '', 'ORDER BY post_date ASC, ID ASC LIMIT 1') &&
+		str_contains($lookups[1] ?? '', "post_status = 'publish'") &&
+		str_contains($lookups[1] ?? '', 'post_type = post'),
+);
+same(
+	'the lookups are the emitter\'s own and do not count as the page\'s reads',
+	[[], []],
+	[drupflare_tags_state()['readers'], drupflare_tags_state()['reasons']],
+);
+
+$neighbourTags = static function (callable $fire): array {
+	fresh();
+	$GLOBALS['wpdb']->var = ['4', '9', '2', '3'];
+	$fire();
+	return array_values(
+		array_filter(sentTags(), static fn(string $t): bool => str_starts_with($t, 'post_links:')),
+	);
+};
+same(
+	'unpublishing names no neighbour, since the pages that linked to the post carry its tag',
+	[],
+	$neighbourTags(static fn() => do_action('transition_post_status', 'draft', 'publish', post(5))),
+);
+same(
+	'moving a post out of publish names no neighbour',
+	[],
+	$neighbourTags(
+		static fn() => do_action(
+			'post_updated',
+			5,
+			post(5, 'post', 'draft', '2020-06-01 10:00:00'),
+			post(5, 'post', 'publish', '2020-01-01 10:00:00'),
+		),
+	),
+);
+same(
+	'a post that enters publish at a new date names the neighbours at the new place only',
+	['post_links:4', 'post_links:9'],
+	$neighbourTags(
+		static fn() => do_action(
+			'post_updated',
+			5,
+			post(5, 'post', 'publish', '2020-06-01 10:00:00'),
+			post(5, 'post', 'publish', '2020-01-01 10:00:00'),
+		),
+	),
+);
+same(
+	'an edit that keeps a post published names no neighbour',
+	[],
+	$neighbourTags(
+		static fn() => do_action('transition_post_status', 'publish', 'publish', post(5)),
+	),
+);
+same(
+	'a draft that stays a draft names no neighbour',
+	[],
+	$neighbourTags(static fn() => do_action('transition_post_status', 'draft', 'draft', post(5))),
+);
+same(
+	'a post whose date did not move names no neighbour on update',
+	[],
+	$neighbourTags(static fn() => do_action('post_updated', 5, post(5), post(5))),
+);
+same(
+	'a draft moved in date names no neighbour',
+	[],
+	$neighbourTags(
+		static fn() => do_action(
+			'post_updated',
+			5,
+			post(5, 'post', 'draft', '2020-06-01 10:00:00'),
+			post(5, 'post', 'draft', '2020-01-01 10:00:00'),
+		),
+	),
+);
+same(
+	'a revision publishing names no neighbour',
+	[],
+	$neighbourTags(
+		static fn() => do_action('transition_post_status', 'publish', 'draft', post(5, 'revision')),
+	),
+);
+fresh();
+$GLOBALS['wpdb']->var = [null, null];
+do_action('transition_post_status', 'publish', 'draft', post(5));
+same('a post with no neighbour names none', ['post:5', 'posts', 'posts:post'], sentTags());
 #endregion
 
 #region host calls
@@ -1203,6 +1377,54 @@ $core = $call(static fn() => get_adjacent_post());
 same('a core reader we account for is fine and adds its listing', ['posts'], $core['tags']);
 same('and is recorded by name', ['get_adjacent_post'], $core['readers']);
 same('with no reason against the page', [], $core['reasons']);
+$plain = static fn(
+	string $op,
+	string $order,
+	string $type = 'post',
+	string $join = '',
+): string => "SELECT p.ID FROM wp_posts AS p $join WHERE (p.post_date $op '2020-03-01 10:00:00' OR (p.post_date = '2020-03-01 10:00:00' AND p.ID $op 5)) AND p.post_type = '$type' AND p.post_status = 'publish' ORDER BY p.post_date $order, p.ID $order LIMIT 1";
+foreach ([['<', 'DESC'], ['>', 'ASC']] as [$op, $order]) {
+	$adjacent = $call(static fn() => get_adjacent_post($plain($op, $order)));
+	same(
+		"a plain adjacent-post read ($op) depends on the links of its own post only",
+		['post_links:5'],
+		$adjacent['tags'],
+	);
+	same(
+		"and is still a recognised reader ($op)",
+		[['get_adjacent_post'], []],
+		[$adjacent['readers'], $adjacent['reasons']],
+	);
+}
+$plainOther = $call(static fn() => get_adjacent_post($plain('<', 'DESC', 'book')));
+same('a plain read of another post type is plain too', ['post_links:5'], $plainOther['tags']);
+$variants = [
+	'a term join' => $plain(
+		'<',
+		'DESC',
+		'post',
+		'INNER JOIN wp_term_relationships AS tr ON p.ID = tr.object_id',
+	),
+	'a mismatched order' => $plain('<', 'ASC'),
+	'a filtered where clause' => str_replace(
+		"p.post_status = 'publish'",
+		"p.post_status = 'publish' AND p.post_author = 3",
+		$plain('<', 'DESC'),
+	),
+	'a private-post clause' => str_replace(
+		"p.post_status = 'publish'",
+		"( p.post_status = 'publish' OR p.post_status = 'private' )",
+		$plain('<', 'DESC'),
+	),
+	'a lookup with no id tie-break' =>
+		'SELECT p.ID FROM wp_posts AS p WHERE p.post_date < \'2020-03-01 10:00:00\' AND p.post_type = \'post\' AND p.post_status = \'publish\' ORDER BY p.post_date DESC LIMIT 1',
+	'a longer limit' => str_replace('LIMIT 1', 'LIMIT 5', $plain('<', 'DESC')),
+	'a theme\'s own sort' => str_replace('p.ID DESC', 'p.post_title DESC', $plain('<', 'DESC')),
+];
+foreach ($variants as $label => $sql) {
+	$variant = $call(static fn() => get_adjacent_post($sql));
+	same("$label keeps the table-wide tag", ['posts'], $variant['tags']);
+}
 $lastComment = $call(static fn() => get_lastcommentmodified());
 same('the last comment time depends on the comment listing', ['comments'], $lastComment['tags']);
 same('and is a recognised reader', [], $lastComment['reasons']);
