@@ -550,16 +550,28 @@ class CfwFileStreamWrapper implements StreamWrapperInterface
 	}
 
 	/**
-	 * Accepts the metadata calls PHP makes and reports them as unsupported.
+	 * Accepts the metadata calls PHP makes.
 	 *
 	 * Declared with the REAL prototype -- `touch()`, `chmod()` and `chown()` invoke this with three
 	 * arguments -- because a zero-argument method under this name would take an
-	 * `ArgumentCountError` on the first caller. There are no permissions or mtimes to set on this
-	 * storage, so FALSE is the honest answer rather than a silent TRUE.
+	 * `ArgumentCountError` on the first caller. This storage has no modes, owners or settable mtimes,
+	 * so `chmod()` and `chown()` succeed as no-ops, as on any object store: Drupal's `FileSystem`
+	 * chmods every file it writes and treats a refusal as a failed save. `touch()` creates a missing
+	 * file and otherwise leaves it as it is.
 	 */
 	public function stream_metadata($path, $option, $value): bool
 	{
-		return false;
+		if ($option !== STREAM_META_TOUCH) {
+			return true;
+		}
+		if (file_exists($path)) {
+			return true;
+		}
+		$handle = @fopen($path, 'w');
+		if ($handle === false) {
+			return false;
+		}
+		return fclose($handle);
 	}
 
 	/**

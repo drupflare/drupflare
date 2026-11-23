@@ -2600,6 +2600,14 @@ ok('a write lands in the store', file_put_contents('public://a.txt', 'hello') ==
 $lastCall = $fileHost->calls[array_key_last($fileHost->calls)];
 ok('the host was told the mime type', ($lastCall[1]['mime'] ?? '') === 'text/plain');
 ok('and reads back', file_get_contents('public://a.txt') === 'hello');
+ok('chmod on a stored file succeeds', chmod('public://a.txt', 0644) === true);
+ok(
+	'touch creates a missing file and leaves an existing one',
+	touch('public://touched.txt') &&
+		file_exists('public://touched.txt') &&
+		touch('public://a.txt') &&
+		file_get_contents('public://a.txt') === 'hello',
+);
 
 file_put_contents('public://i.png', 'p');
 $lastCall = $fileHost->calls[array_key_last($fileHost->calls)];
@@ -2789,9 +2797,11 @@ ok(
 ok('there is a description', $wrapper->getDescription() !== '');
 // there is no path on any filesystem that holds these bytes
 ok('realpath is FALSE rather than something plausible', $wrapper->realpath() === false);
+// FileSystem::chmod() runs after every write, so a refusal fails GD and image style saves
 ok(
-	'metadata calls are refused rather than silently accepted',
-	$wrapper->stream_metadata('public://a', 1, 0) === false,
+	'chmod and chown are accepted as no-ops',
+	$wrapper->stream_metadata('public://a', STREAM_META_ACCESS, 0644) === true &&
+		$wrapper->stream_metadata('public://a', STREAM_META_OWNER, 0) === true,
 );
 ok('there is no locking to report', $wrapper->stream_lock(LOCK_EX) === false);
 ok('and no descriptor for stream_select', $wrapper->stream_cast(STREAM_CAST_FOR_SELECT) === false);
