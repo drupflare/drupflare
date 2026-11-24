@@ -366,6 +366,29 @@ final class RequestResetter
 	}
 
 	/**
+	 * Follows decorators down to the collector they wrap.
+	 *
+	 * A decorated service is not a `CacheCollector` itself, so the cid reset above never reached the
+	 * one underneath: anachron decorates `library.discovery` with a class that holds the original in
+	 * `inner`. Bounded, because a chain of decorators is short and a cycle would spin.
+	 */
+	private function unwrapDecorators(object $service): object
+	{
+		for ($depth = 0; $depth < 4 && !($service instanceof CacheCollector); $depth++) {
+			try {
+				$inner = (new ReflectionObject($service))->getProperty('inner')->getValue($service);
+			} catch (Throwable) {
+				break;
+			}
+			if (!is_object($inner)) {
+				break;
+			}
+			$service = $this->unwrapProxy($inner);
+		}
+		return $service;
+	}
+
+	/**
 	 * Returns the real service behind a generated lazy proxy, or the object itself.
 	 *
 	 * A service marked `lazy: true` is handed out as a `Drupal\Core\ProxyClass\...` wrapper that
@@ -474,7 +497,7 @@ final class RequestResetter
 				// UNWRAPPED FIRST. menu.active_trail is `lazy: true`, so the container hands back a
 				// generated ProxyClass; the forwarded reset() worked and the reflection did not,
 				// which looked exactly like a reset that had no effect.
-				$real = $this->unwrapProxy($collector);
+				$real = $this->unwrapDecorators($this->unwrapProxy($collector));
 				if ($real instanceof CacheCollector) {
 					$property = new ReflectionProperty(CacheCollector::class, 'cid');
 					$property->setValue($real, null);

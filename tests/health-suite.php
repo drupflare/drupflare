@@ -1558,6 +1558,51 @@ ok(
 	json_encode($log['simplesaml'] ?? null),
 );
 
+echo "\n# a collector behind a decorator\n";
+
+$decorated_collector = new class extends \Drupal\Core\Cache\CacheCollector {
+	public function __construct() {}
+
+	public function reset()
+	{
+		// the base reset leaves the cid, as a collector that does not override it does
+	}
+
+	public function memoise(): void
+	{
+		$this->cid = 'library_info:claro';
+	}
+
+	public function cid(): ?string
+	{
+		return $this->cid;
+	}
+
+	protected function resolveCacheMiss($key)
+	{
+		return null;
+	}
+};
+$decorated_collector->memoise();
+$decorator = new class ($decorated_collector) {
+	public function __construct(private object $inner) {}
+
+	public function reset(): void
+	{
+		$this->inner->reset();
+	}
+};
+$log = (new RequestResetter(resetter_container(['library.discovery' => $decorator]), []))->reset();
+ok(
+	'the memoised cid under a decorator is cleared',
+	$decorated_collector->cid() === null,
+	json_encode($log['collectors'] ?? null),
+);
+ok(
+	'and the log says the collector was reset',
+	($log['collectors']['library.discovery'] ?? null) === true,
+);
+
 echo "\n# the SimpleSAMLphp store backed by the site database\n";
 
 class RecordingExpirable
